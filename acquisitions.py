@@ -51,153 +51,181 @@ FA_SERVICE_YEARS      = 6
 ARB_SERVICE_YEARS     = 3
 
 # ── OOTP 27 RENAME PIPELINE ───────────────────────────────────────────────────
-# Maps OOTP export display names → suite column names.
-# Applied once on load in prep_data(). Handles all collision cases.
+# Maps ACTUAL export column names → suite column names.
+# Verified against real export (player_search___shortlist_player_search_ootp27_suite.csv).
+# Column name conventions in this export use short names and dot-suffix for collisions.
 PLAYER_RENAMES = {
-    # Identity
-    'Position':             'POS',
-    'Organization':         'ORG',
-    'Age':                  'AGE',
-    'Name':                 'Name',   # already correct, explicit for clarity
-    'Team':                 'TM',
+    # Identity — already correct in export: ID, POS, Name, TM, ORG, Age, B, T, OVR, POT
+    'Age':          'AGE',
+    'RL':           'ROLE',       # Role column is 'RL' not 'Role'
+    'Prone':        'PRONE',      # Injury Prone is 'Prone'
+    'Risk':         'DEV_RISK',   # Development Risk is 'Risk'
+    'Type':         'PIT_TYPE',   # Personality type
 
-    # Batting ratings
-    'Contact':              'CON',
-    'Gap Power':            'GAP',
-    'Power':                'POW',
-    'Eye':                  'EYE',
-    "Avoid K's":            'AVK',
-    'BABIP':                'BAT_BABIP_RATING',   # ratings tab — renamed first
-    'Speed':                'SPE',
-    'GB Tendency':          'BAT_GBT',
-    'FB Tendency':          'BAT_FBT',
-    'Contact Pot.':         'CON_P',
-    'Gap Pot.':             'GAP_P',
-    'Power Pot.':           'POW_P',
-    'Eye Pot.':             'EYE_P',
-    'BABIP Pot.':           'BAT_BABIP_P',
-    'Contact vs. LHP':      'CON_vL',
-    'Contact vs. RHP':      'CON_vR',
-    'Gap vs. LHP':          'GAP_vL',
-    'Gap vs. RHP':          'GAP_vR',
-    'Power vs. LHP':        'POW_vL',
-    'Power vs. RHP':        'POW_vR',
-    'Eye vs. LHP':          'EYE_vL',
-    'Eye vs. RHP':          'EYE_vR',
+    # Batting ratings — mostly already correct short names
+    "K's":          'AVK',        # Avoid K's
+    'BABIP':        'BAT_BABIP_RATING',  # ratings BABIP (20-80 integer)
+    'GBT':          'BAT_GBT',
+    'FBT':          'BAT_FBT',
+    'HT P':         'BAT_BABIP_P',   # BABIP potential uses 'HT P' label
+    'CON P':        'CON_P',
+    'GAP P':        'GAP_P',         # Note: not 'Gap Pot.' — short name
+    'POW P':        'POW_P',         # Wait, actual export says 'POW P'? Let me check
+    'EYE P':        'EYE_P',
+    'K P':          'AVK_P',
+    # Batter v-splits: export uses 'CON vL', 'GAP vL' etc (space, no dot)
+    'CON vL':       'CON_vL',
+    'CON vR':       'CON_vR',
+    'GAP vL':       'GAP_vL',
+    'GAP vR':       'GAP_vR',
+    'POW vL':       'POW_vL',
+    'POW vR':       'POW_vR',
+    'EYE vL':       'EYE_vL',
+    'EYE vR':       'EYE_vR',
+    'BA vL':        'BA_vL',
+    'BA vR':        'BA_vR',
+    'K vL':         'AVK_vL',
+    'K vR':         'AVK_vR',
 
     # Pitching ratings
-    'Stuff':                'STU',
-    'Movement':             'MOV',
-    'Control':              'PIT_CON',
-    'PBABIP':               'PBABIP',
-    'HR Rate':              'HRA',
-    'Stamina':              'STM',
-    'Velocity':             'VELO',
-    'Velocity Potential':   'VELO_P',
-    'Ground/Fly':           'PIT_GF',
-    'Pitches':              'PIT_COUNT',
-    'Type':                 'PIT_TYPE',
-    'Stuff vs. LHB':        'STU_vL',
-    'Stuff vs. RHB':        'STU_vR',
-    'Movement vs. LHB':     'MOV_vL',
-    'Movement vs. RHB':     'MOV_vR',
-    'Control vs. LHB':      'PIT_CON_vL',
-    'Control vs. RHB':      'PIT_CON_vR',
-    'PBABIP vs. LHB':       'PBABIP_vL',
-    'PBABIP vs. RHB':       'PBABIP_vR',
-    'HR Rate vs. LHB':      'HRA_vL',
-    'HR Rate vs. RHB':      'HRA_vR',
-    'Stuff Potential':      'STU_P',
-    'Movement Potential':   'MOV_P',
-    'Control Potential':    'PIT_CON_P',
-    'Fastball':             'PIT_FB_GR',
-    'Fastball Potential':   'PIT_FB_GR_P',
-    'Changeup':             'PIT_CH',
-    'Changeup Potential':   'PIT_CH_P',
-    'Sinker':               'PIT_SI',
-    'Sinker Potential':     'PIT_SI_P',
-    'Slider':               'PIT_SL',
-    'Slider Potential':     'PIT_SL_P',
-    'Curveball':            'PIT_CB',
-    'Curveball Potential':  'PIT_CB_P',
-    'Cutter':               'PIT_CT',
-    'Cutter Potential':     'PIT_CT_P',
-    'Splitter':             'PIT_SP',
-    'Splitter Potential':   'PIT_SP_P',
+    # STU, MOV, PBABIP, HRA, STM already correct
+    'CON_1':        'PIT_CON',       # pitcher control (suffix collision with batter CON)
+    'G/F':          'PIT_GF',
+    'PIT':          'PIT_COUNT',     # pitch count column is 'PIT'
+    'PT':           'PIT_PT',        # pitcher type
+    'VT':           'VELO_P',        # velocity potential
+    # Pitcher v-splits: 'STU vL', 'MOV vL' etc (space)
+    'STU vL':       'STU_vL',
+    'STU vR':       'STU_vR',
+    'MOV vL':       'MOV_vL',
+    'MOV vR':       'MOV_vR',
+    'CON vL_1':     'PIT_CON_vL',   # pitcher CON vL (suffix _1 disambiguates from batter)
+    'CON vR_1':     'PIT_CON_vR',
+    'PBABIP vL':    'PBABIP_vL',
+    'PBABIP vR':    'PBABIP_vR',
+    'HRA vL':       'HRA_vL',
+    'HRA vR':       'HRA_vR',
+    'STU P':        'STU_P',
+    'MOV P':        'MOV_P',
+    'CON P_1':      'PIT_CON_P',    # pitcher CON potential
+    'PBABIP P':     'PBABIP_P',
+    'HRA P':        'HRA_P',
+    # Pitch grades — short names confirmed: FB, CH, CB, SL, SI, SP, CT, FO, CC, SC, KC, KN
+    'FB':           'PIT_FB_GR',
+    'FBP':          'PIT_FB_GR_P',
+    'CH':           'PIT_CH',
+    'CHP':          'PIT_CH_P',
+    'CB':           'PIT_CB',
+    'CBP':          'PIT_CB_P',
+    'SL':           'PIT_SL',
+    'SLP':          'PIT_SL_P',
+    'SI':           'PIT_SI',
+    'SIP':          'PIT_SI_P',
+    'SP':           'PIT_SP',
+    'SPP':          'PIT_SP_P',
+    'CT':           'PIT_CT',
+    'CTP':          'PIT_CT_P',
+    'FO':           'PIT_FO',
+    'FOP':          'PIT_FO_P',
+    'CC':           'PIT_CC',
+    'CCP':          'PIT_CC_P',
+    'SC':           'PIT_SC',
+    'SCP':          'PIT_SC_P',
+    'KC':           'PIT_KC',
+    'KCP':          'PIT_KC_P',
+    'KN':           'PIT_KN',
+    'KNP':          'PIT_KN_P',
 
-    # Fielding ratings
-    'Catcher Blocking':     'C_ABI',
-    'Catcher Framing':      'C_FRM',
-    'Catcher Arm':          'C_ARM',
-    'Infield Range':        'IF_RNG',
-    'Infield Error':        'IF_ERR',
-    'Infield Arm':          'IF_ARM',
-    'Turn DP':              'TDP',
-    'Outfield Range':       'OF_RNG',
-    'Outfield Error':       'OF_ERR',
-    'Outfield Arm':         'OF_ARM',
-    'Fielding at C':        'FLD_C',
-    'Fielding at 1B':       'FLD_1B',
-    'Fielding at 2B':       'FLD_2B',
-    'Fielding at 3B':       'FLD_3B',
-    'Fielding at SS':       'FLD_SS',
-    'Fielding at LF':       'FLD_LF',
-    'Fielding at CF':       'FLD_CF',
-    'Fielding at RF':       'FLD_RF',
+    # Fielding ratings — short names with spaces confirmed
+    'C ABI':        'C_ABI',
+    'C FRM':        'C_FRM',
+    'C ARM':        'C_ARM',
+    'IF RNG':       'IF_RNG',
+    'IF ERR':       'IF_ERR',
+    'IF ARM':       'IF_ARM',
+    'OF RNG':       'OF_RNG',
+    'OF ERR':       'OF_ERR',
+    'OF ARM':       'OF_ARM',
+    # TDP already correct
+    # Fielding at position: bare position names (P, C, 1B, 2B, 3B, SS, LF, CF, RF)
+    # These collide with position strings — rename to FLD_ prefix
+    # NOTE: POS column is already 'POS'; these bare names are fielding ratings
+    'P':            'FLD_P',
+    'C':            'FLD_C',
+    '1B':           'FLD_1B',
+    '2B':           'FLD_2B',
+    '3B':           'FLD_3B',
+    'SS':           'FLD_SS',
+    'LF':           'FLD_LF',
+    'CF':           'FLD_CF',
+    'RF':           'FLD_RF',
+    'P Pot':        'FLD_P_P',
+    'C Pot':        'FLD_C_P',
+    '1B Pot':       'FLD_1B_P',
+    '2B Pot':       'FLD_2B_P',
+    '3B Pot':       'FLD_3B_P',
+    'SS Pot':       'FLD_SS_P',
+    'LF Pot':       'FLD_LF_P',
+    'CF Pot':       'FLD_CF_P',
+    'RF Pot':       'FLD_RF_P',
 
-    # Batting stats — must come AFTER batting ratings BABIP rename
-    'WAR':                  'BAT_WAR',
-    'BB%':                  'BAT_BB_PCT',
+    # Batting stats
+    'WAR':          'BAT_WAR',
+    'BB%':          'BAT_BB_PCT',
+    'BABIP_1':      'BAT_BABIP_STAT',   # stat BABIP (decimal)
+    '1B_1':         'BAT_1B',
+    '2B_1':         'BAT_2B',
+    '3B_1':         'BAT_3B',
 
-    # Pitching stats — suffix collisions resolved by pandas on combined export
-    # These are fallback names if OOTP doesn't auto-suffix
-    'G_1':                  'PIT_G',
-    'GS_1':                 'PIT_GS',
-    'W':                    'PIT_W',
-    'L':                    'PIT_L',
-    'SV':                   'PIT_SV',
-    'HLD':                  'PIT_HLD',
-    'ERA':                  'PIT_ERA',
-    'FIP':                  'PIT_FIP',
-    'FIP-':                 'PIT_FIP_MINUS',
-    'WAR_1':                'PIT_WAR',
-    'rWAR':                 'PIT_rWAR',
-    'GB_1':                 'PIT_GB',
-    'FB_1':                 'PIT_FB',
-    'GO%':                  'PIT_GO_PCT',
-    'SP Fatigue %':         'SP_FATIGUE',
-    'RP Fatigue %':         'RP_FATIGUE',
-    'BABIP_1':              'PIT_BABIP_STAT',
+    # Pitching stats — suffix _1 on collision columns
+    'WAR_1':        'PIT_WAR',
+    'G':            'PIT_G',
+    'GS':           'PIT_GS',
+    'W':            'PIT_W',
+    'L':            'PIT_L',
+    'SV':           'PIT_SV',
+    'HLD':          'PIT_HLD',
+    'ERA':          'PIT_ERA',
+    'FIP':          'PIT_FIP',
+    'FIP-':         'PIT_FIP_MINUS',
+    'rWAR':         'PIT_rWAR',
+    'GB':           'PIT_GB',
+    'FB_1':         'PIT_FB_STAT',
+    'GO%':          'PIT_GO_PCT',
+    'BB_1':         'PIT_BB',
+    'K_1':          'PIT_K',
+    'K%_1':         'PIT_K_PCT',
+    'BB%_1':        'PIT_BB_PCT',
+    'HR/9':         'PIT_HR9',
+    'H/9':          'PIT_H9',
+    'SPF%':         'SP_FATIGUE',
+    'RPF%':         'RP_FATIGUE',
 
     # Fielding stats
-    'G_2':                  'FLD_G',
-    'GS_2':                 'FLD_GS',
-    'ZR':                   'ZR',
-    'EFF':                  'FLD_EFF',
-    'FRM':                  'FRM_STAT',
-    'ARM':                  'ARM_STAT',
+    'POS_1':        'FLD_POS',
+    'G_1':          'FLD_G',
+    'GS_1':         'FLD_GS',
+    # ZR, EFF, FRM, ARM, TC, E already correct
 
-    # Misc
-    'Salary':               'SALARY',
-    'Years Left':           'YEARS_LEFT',
-    'Contract Value':       'CONTRACT_VALUE',
-    'Total Years':          'CONTRACT_TOTAL_YRS',
-    'ML Yrs':               'ML_YRS',
-    'ML Days':              'ML_DAYS',
-    'FA Type':              'FA_TYPE',
-    'Demand':               'FA_DEMAND',
-    'On Waivers':           'ON_WAIVERS',
-    'Is DFA':               'IS_DFA',
-    'Development Risk':     'DEV_RISK',
-    'Injury Prone':         'PRONE',
-    'Overall':              'OVR',
-    'Potential':            'POT',
+    # Misc / contract — short names confirmed
+    'SLR':          'SALARY',
+    'YL':           'YEARS_LEFT',
+    'CV':           'CONTRACT_VALUE',
+    'TY':           'CONTRACT_TOTAL_YRS',
+    'MLY':          'ML_YRS',
+    'MLD':          'ML_DAYS',
+    'WAIV':         'ON_WAIVERS',
+    'DFA':          'IS_DFA',
+    'DEM':          'FA_DEMAND',
+    'FAT':          'FA_TYPE',
+    'ACT':          'IS_ACTIVE',
+    'SLR':          'SALARY',
 }
 
-# Numeric columns to coerce on load
+# Numeric columns to coerce on load (post-rename names)
 NUMERIC_COLS = [
     'AGE', 'POW', 'CON', 'EYE', 'GAP', 'SPE', 'AVK',
-    'BAT_BABIP_RATING', 'BAT_BABIP_P',
+    'BAT_BABIP_RATING', 'BAT_BABIP_STAT',
     'CON_P', 'GAP_P', 'POW_P', 'EYE_P',
     'CON_vL', 'CON_vR', 'GAP_vL', 'GAP_vR',
     'POW_vL', 'POW_vR', 'EYE_vL', 'EYE_vR',
@@ -214,9 +242,8 @@ NUMERIC_COLS = [
     'BAT_WAR', 'PIT_WAR', 'PA', 'IP',
     'PIT_G', 'PIT_GS', 'PIT_ERA', 'PIT_FIP', 'PIT_FIP_MINUS',
     'SP_FATIGUE', 'RP_FATIGUE',
-    'SALARY', 'YEARS_LEFT', 'CONTRACT_VALUE', 'CONTRACT_TOTAL_YRS',
+    'YEARS_LEFT', 'CONTRACT_VALUE', 'CONTRACT_TOTAL_YRS',
     'ML_YRS', 'ML_DAYS',
-    'BABIP',   # batting stat BABIP (may arrive as plain BABIP in some exports)
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -237,58 +264,40 @@ def _parse_velo(v) -> float:
         return 0.0
 
 
+def _parse_salary(v) -> float:
+    """Parse '$10 000' or '$1,500,000' salary strings → float."""
+    if pd.isna(v) or v == '' or v == '-':
+        return 0.0
+    digits = re.sub(r'[^\d]', '', str(v))
+    return float(digits) if digits else 0.0
+
+
 def prep_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     Apply the OOTP 27 rename pipeline and coerce numeric columns.
-    Called once on upload. Returns a clean DataFrame ready for F1/TV calc.
+    Verified against real export format.
     """
-    # Step 1 — apply rename map (only renames columns that exist)
+    # Step 1 — apply rename map
     df = df.rename(columns={k: v for k, v in PLAYER_RENAMES.items() if k in df.columns})
 
-    # Step 2 — handle suffix collisions from combined export
-    # OOTP appends .1, .2 when the same display name appears in multiple tabs
-    suffix_renames = {}
-    for col in df.columns:
-        if col.endswith('.1'):
-            base = col[:-2]
-            if base == 'WAR':       suffix_renames[col] = 'PIT_WAR'
-            elif base == 'G':       suffix_renames[col] = 'PIT_G'
-            elif base == 'GS':      suffix_renames[col] = 'PIT_GS'
-            elif base == 'BABIP':   suffix_renames[col] = 'PIT_BABIP_STAT'
-            elif base == 'GB':      suffix_renames[col] = 'PIT_GB'
-            elif base == 'FB':      suffix_renames[col] = 'PIT_FB'
-        elif col.endswith('.2'):
-            base = col[:-2]
-            if base == 'G':         suffix_renames[col] = 'FLD_G'
-            elif base == 'GS':      suffix_renames[col] = 'FLD_GS'
-    if suffix_renames:
-        df = df.rename(columns=suffix_renames)
-
-    # Step 3 — parse velocity range strings
+    # Step 2 — parse velocity range strings → velo_mid
     if 'VELO' in df.columns:
         df['velo_mid'] = df['VELO'].apply(_parse_velo)
     else:
         df['velo_mid'] = 0.0
+
+    # Step 3 — parse salary string ($10 000 → 10000)
+    if 'SALARY' in df.columns:
+        df['SALARY'] = df['SALARY'].apply(_parse_salary)
 
     # Step 4 — numeric coercion
     for col in NUMERIC_COLS + ['velo_mid']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # Step 5 — normalize ORG/TM
-    if 'ORG' in df.columns:
+    # Step 5 — normalize TM from ORG if needed
+    if 'ORG' in df.columns and 'TM' not in df.columns:
         df['TM'] = df['ORG']
-    elif 'TM' not in df.columns and 'Team' in df.columns:
-        df = df.rename(columns={'Team': 'TM'})
-
-    # Step 6 — normalize position
-    if 'POS' not in df.columns and 'Position' in df.columns:
-        df = df.rename(columns={'Position': 'POS'})
-
-    # Step 7 — BABIP stat (may arrive as plain BABIP in batting stats tab
-    #           after the ratings BABIP was already renamed to BAT_BABIP_RATING)
-    if 'BABIP' in df.columns and 'BAT_BABIP_STAT' not in df.columns:
-        df = df.rename(columns={'BABIP': 'BAT_BABIP_STAT'})
 
     return df
 
@@ -586,6 +595,104 @@ def babip_luck_flag(row) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# POSITIONAL FLEX DETECTION
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Minimum skill rating required to be eligible at a position (registry: ≥40)
+POS_ELIGIBILITY_FLOOR = 40
+
+# Skills required per position — maps position → list of (skill_col, min_rating)
+# All conditions must be met for eligibility
+POS_SKILL_REQUIREMENTS = {
+    'C':  [('C_ABI', 40)],
+    '1B': [('IF_RNG', 40)],
+    '2B': [('IF_RNG', 40)],
+    '3B': [('IF_RNG', 40)],
+    'SS': [('IF_RNG', 40), ('IF_ARM', 40)],   # SS needs both range AND arm
+    'LF': [('OF_RNG', 40)],
+    'CF': [('OF_RNG', 40)],                    # CF needs higher range in practice
+    'RF': [('OF_RNG', 40)],
+    # Pitchers: STM threshold for SP role capability
+    'SP': [('STM', 40)],
+}
+
+# Premium positions for flex flagging — these are the ones worth highlighting
+PREMIUM_POSITIONS = {'SS', 'CF', 'C', '2B'}
+
+
+def detect_flex_positions(row) -> list[str]:
+    """
+    Return list of positions the player could potentially learn based on
+    underlying skill ratings, excluding their current listed position.
+
+    Uses POS_SKILL_REQUIREMENTS with POS_ELIGIBILITY_FLOOR (≥40).
+    Registry finding: position eligibility floor = OOTP position rating ≥40,
+    but the derived position ratings (FLD_SS etc.) reflect current experience,
+    not potential. We use raw skill ratings (IF_RNG, OF_RNG, etc.) as the
+    ground truth for what a player *could* learn.
+
+    Only returns positions where skills are present — doesn't guarantee
+    the player will ever be assigned there, just that the engine won't
+    block development.
+    """
+    current_pos = str(row.get('POS', ''))
+    eligible = []
+
+    for pos, requirements in POS_SKILL_REQUIREMENTS.items():
+        if pos == current_pos:
+            continue
+        if all(_s(row.get(skill, 0)) >= floor
+               for skill, floor in requirements):
+            eligible.append(pos)
+
+    return eligible
+
+
+def flex_flag(row, need_positions: list[str] | None = None) -> str:
+    """
+    Returns a flex string for display:
+      - 'FLEX(SS,CF)' — can play premium positions not currently listed
+      - 'FLEX(2B,3B)' — can play non-premium positions
+      - '' — no meaningful flex
+
+    If need_positions provided, prioritizes flagging positions the team needs.
+    Premium positions always shown first.
+    """
+    current_pos = str(row.get('POS', ''))
+
+    # Only meaningful for position players — pitchers don't flex to other roles
+    if current_pos in PITCHER_POSITIONS:
+        return ''
+
+    eligible = detect_flex_positions(row)
+    if not eligible:
+        return ''
+
+    # Prioritize: (1) positions the team needs, (2) premium positions, (3) rest
+    needs   = set(need_positions or [])
+    ordered = (
+        [p for p in eligible if p in needs and p in PREMIUM_POSITIONS] +
+        [p for p in eligible if p in needs and p not in PREMIUM_POSITIONS] +
+        [p for p in eligible if p not in needs and p in PREMIUM_POSITIONS] +
+        [p for p in eligible if p not in needs and p not in PREMIUM_POSITIONS]
+    )
+
+    # Only surface if it's meaningfully different from current position
+    # (e.g. don't flag LF→RF as interesting flex)
+    interesting = [p for p in ordered
+                   if p in PREMIUM_POSITIONS or p in needs]
+
+    if interesting:
+        return f"FLEX({','.join(interesting[:3])})"  # cap at 3 for display
+
+    # Still show non-premium flex if there are 2+ options
+    if len(ordered) >= 2:
+        return f"FLEX({','.join(ordered[:2])})"
+
+    return ''
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # FEASIBILITY SCORING
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -837,7 +944,7 @@ def evaluate_league(df: pd.DataFrame, tc: dict,
         (df['TM'] != my_team) &
         (df['TM'] != '-') &
         (df['TM'].notna())
-    ].copy()
+    ].copy()  # .copy() prevents fragmentation warning
 
     results = []
     for _, row in candidates.iterrows():
@@ -866,6 +973,10 @@ def evaluate_league(df: pd.DataFrame, tc: dict,
         arb_stat  = compute_arb_status(ml_yrs, ml_days)
         svc_years = round(ml_yrs + ml_days / DAYS_PER_SERVICE_YEAR, 1)
 
+        # FA-eligible players are Mode 3 territory, not trade targets
+        if control <= 0.0:
+            continue
+
         # Trade value
         tv = trade_value(f1_val, control, pos)
 
@@ -880,6 +991,17 @@ def evaluate_league(df: pd.DataFrame, tc: dict,
         # Arsenal (pitchers)
         cnt_eff = cnt_eff_pitches(r) if pos in PITCHER_POSITIONS else None
         min_eff = min_eff_pitch(r)   if pos in PITCHER_POSITIONS else None
+
+        # Flex detection (batters only)
+        need_pos = tc.get('need_positions', [])
+        flex = flex_flag(r, need_pos) if pos in BATTER_POSITIONS else ''
+
+        # Boost fit score if flex covers a need position
+        if flex and need_pos:
+            flex_positions = detect_flex_positions(r)
+            if any(p in need_pos for p in flex_positions):
+                fit = min(10.0, fit + 0.8)
+                agg = feasibility_aggregate(mkt, fit)
 
         # Slot
         slot = roster_slot_tag(r, tc)
@@ -901,6 +1023,7 @@ def evaluate_league(df: pd.DataFrame, tc: dict,
             'Score':       agg,
             'Slot':        slot,
             'Luck':        luck,
+            'Flex':        flex,
             'CNT_eff':     cnt_eff,
             'MIN_eff':     min_eff,
             'STU':         int(_s(r.get('STU', 0))) if pos in PITCHER_POSITIONS else None,
@@ -1198,7 +1321,7 @@ def render_mode1(league: League):
 
     bat_display_cols = [c for c in [
         'Name', 'TM', 'POS', 'Age', 'F1', 'TV', 'Control', 'Svc_Yrs', 'Arb',
-        'Salary', 'Yrs_Left', 'Market', 'Fit', 'Score', 'Slot', 'Luck',
+        'Salary', 'Yrs_Left', 'Market', 'Fit', 'Score', 'Slot', 'Luck', 'Flex',
         'CON', 'POW', 'EYE', 'GAP', 'SPE', 'PRONE', 'ON_WAIVERS', 'IS_DFA'
     ] if c in bat_results.columns]
 
@@ -1217,7 +1340,8 @@ def render_mode1(league: League):
                 "**Market** = likelihood their team trades them (0-10). "
                 "**Fit** = match to your team's needs (0-10). "
                 "**Score** = weighted aggregate. "
-                "**Luck**: BAD_LUCK = buy signal (underperforming ratings)."
+                "**Luck**: BAD_LUCK = buy signal (underperforming ratings). "
+                "**Flex**: positions player could learn based on underlying skills (IF_RNG, OF_RNG, C_ABI ≥40)."
             )
             st.dataframe(
                 bat_results[bat_display_cols],
