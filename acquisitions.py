@@ -1110,7 +1110,9 @@ def render_team_config(league: League):
                 "Luxury Tax Threshold ($)",
                 value=int(tc.get('tax_threshold', 0)),
                 min_value=0, step=50000,
-                help="120% of average payroll. Check league financials.",
+                help="120% of average payroll. Find it in OOTP under League → Financials. "
+                     "Example: if average payroll is $5M, threshold is $6M. "
+                     "Acquisitions that push you over this number will be flagged.",
                 key='tc_tax'
             )
 
