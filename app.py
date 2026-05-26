@@ -48,7 +48,6 @@ if selected_league_name == CREATE_OPTION:
     if st.sidebar.button("Create", key='create_league_btn'):
         if new_name.strip():
             db.create_league(new_name.strip())
-            st.session_state['league_select'] = new_name.strip()
             st.rerun()
         else:
             st.sidebar.error("Enter a league name.")
