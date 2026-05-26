@@ -1281,17 +1281,22 @@ def render_mode4(league: League):
 def render_acquisitions(league: League):
     """
     Main entry point called from app.py.
-    Dispatches to mode tabs + settings.
+    Dispatches to mode tabs only. Team Config lives in Settings.
     """
     st.header("🔄 Acquisitions")
 
-    # Mode tabs + settings
+    complete, missing = league.team_config_complete()
+    if not complete:
+        st.warning(
+            f"Team Config is incomplete ({', '.join(missing)} missing). "
+            "Go to **⚙️ Settings** in the sidebar to configure your team."
+        )
+
     tabs = st.tabs([
         "🌐 Browse League",
         "💬 Slack Eval",
         "🆓 Free Agents",
         "🤝 Build a Deal",
-        "⚙️ Settings",
     ])
 
     with tabs[0]:
@@ -1302,5 +1307,3 @@ def render_acquisitions(league: League):
         render_mode3(league)
     with tabs[3]:
         render_mode4(league)
-    with tabs[4]:
-        render_team_config(league)
