@@ -1727,7 +1727,7 @@ def render_mode2(league: League):
         st.warning(f"{ambiguous_count} player(s) matched on last name only — verify before acting.")
 
     st.dataframe(
-        out[display_cols].style.applymap(color_verdict, subset=['Verdict']),
+        out[display_cols].style.map(color_verdict, subset=['Verdict']),
         use_container_width=True,
         height=600,
         hide_index=True,
