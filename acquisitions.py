@@ -2097,12 +2097,12 @@ def render_mode4(league: League):
     # ── Target player card ────────────────────────────────────────────────────
     st.markdown("---")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("F1", f"{target_f1:.2f}")
-    c2.metric("Trade Value", f"{target_tv:.1f}")
-    c3.metric("Control", f"{target_control:.1f} yr")
-    c4.metric("Age", int(target_age))
-    c5.metric("Status", target_arb)
-    c6.metric("Salary", f"${int(target_salary):,}" if target_salary > 0 else "—")
+    c1.metric("F1",           f"{target_f1:.2f}")
+    c2.metric("Trade Value",  f"{target_tv:.1f}")
+    c3.metric("Control",      f"{target_control:.1f} yr")
+    c4.metric("Age",          int(target_age))
+    c5.metric("Arb Status",   target_arb)
+    c6.metric("Salary",       f"${int(target_salary):,}" if target_salary > 0 else "—")
 
     # Feasibility of this target
     mkt = market_score(target, None)
@@ -2230,7 +2230,9 @@ def render_mode4(league: League):
             'Salary':  int(_s(r.get('SALARY', 0))),
         })
 
-    assets_df = pd.DataFrame(my_assets).sort_values('TV', ascending=False)
+    assets_df = pd.DataFrame(my_assets)
+    # Sort by TV descending, break ties with F1 descending
+    assets_df = assets_df.sort_values(['TV', 'F1'], ascending=[False, False]).reset_index(drop=True)
 
     st.caption(f"{len(assets_df)} tradeable players (untouchables excluded)")
     st.dataframe(assets_df, use_container_width=True, hide_index=True, height=300)
