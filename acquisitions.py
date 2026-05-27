@@ -15,6 +15,7 @@ Trade Value = (F1 - 0.2) × control_window × POS_MULT
 Feasibility = Market score (0-10) + Fit score (0-10) + aggregate.
 """
 
+import os
 import re
 import numpy as np
 import pandas as pd
@@ -1383,9 +1384,370 @@ def render_mode1(league: League):
 # MODE STUBS
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# GOOGLE SHEETS READER
+# ══════════════════════════════════════════════════════════════════════════════
+
+CREDENTIALS_PATH = os.path.join(os.path.dirname(__file__), 'google_credentials.json')
+SHEETS_SCOPE     = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+
+
+def fetch_trade_talk_sheet(sheet_id: str) -> pd.DataFrame | None:
+    """
+    Fetch TradeTalk tab from Google Sheet using service account credentials.
+    Returns DataFrame or None on error.
+    """
+    try:
+        from google.oauth2.service_account import Credentials
+        import gspread
+
+        creds  = Credentials.from_service_account_file(CREDENTIALS_PATH, scopes=SHEETS_SCOPE)
+        client = gspread.authorize(creds)
+        sh     = client.open_by_key(sheet_id)
+        ws     = sh.worksheet('TradeTalk')
+        data   = ws.get_all_records()
+        return pd.DataFrame(data) if data else None
+    except Exception as e:
+        return None, str(e)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NAME MATCHING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def match_player(player_name: str, org: str, df: pd.DataFrame,
+                 trade_direction: str = 'selling') -> tuple[pd.Series | None, bool]:
+    """
+    Match a player name from the sheet against the league CSV.
+    Always returns (matched_row_or_None, ambiguous_bool).
+
+    Logic:
+    1. Full name match (case-insensitive)
+    2. Last name + ORG match (when direction is selling)
+    3. Last name only fallback (flags ambiguous if >1 match)
+
+    Handles both 'First Last' and 'F. Last' name formats in the CSV.
+    """
+    name_clean = player_name.strip().lower()
+
+    # Full name match
+    full_mask = df['Name'].str.lower().str.strip() == name_clean
+    if full_mask.any():
+        return df[full_mask].iloc[0], False
+
+    # Extract last name from input (last token)
+    last_name = name_clean.split()[-1] if name_clean else ''
+    if not last_name:
+        return None, False
+
+    # Extract last names from CSV — handles 'C. Reynolds' and 'Carlos Reynolds'
+    df_last = df['Name'].str.strip().str.split().str[-1].str.lower()
+
+    # Last name + ORG match
+    if org and trade_direction == 'selling':
+        org_mask  = df['ORG'].str.lower().str.strip() == org.lower().strip()
+        last_mask = df_last == last_name
+        combined  = org_mask & last_mask
+        if combined.any():
+            return df[combined].iloc[0], False
+
+    # Last name only fallback
+    last_mask = df_last == last_name
+    if last_mask.any():
+        matches = df[last_mask]
+        return matches.iloc[0], len(matches) > 1
+
+    return None, False
+
+
+def verdict(f1: float, tv: float, control: float, tc: dict,
+            pos: str, luck: str) -> tuple[str, str]:
+    """
+    Returns (verdict_label, one_line_reason) based on F1, TV, fit context.
+
+    STRONG BUY  — high F1, good control, fits team needs, possibly BAD_LUCK
+    FAIR VALUE  — solid player, reasonable ask
+    OVERPRICED  — low control or aging with high TV expectation
+    PASS        — low F1, wrong fit, or Unmotivated/Disruptive
+    """
+    mode     = tc.get('mode', 'Competing')
+    need_pos = tc.get('need_positions', [])
+
+    reasons = []
+
+    if f1 >= 5.0 and control >= 2.0:
+        label = 'STRONG BUY'
+        reasons.append(f'F1={f1:.1f}, {control:.1f}yr control')
+        if luck == 'BAD_LUCK':
+            reasons.append('buy-low opportunity (BABIP luck)')
+        if pos in need_pos:
+            reasons.append(f'fills {pos} need')
+    elif f1 >= 3.5 and control >= 1.0:
+        label = 'FAIR VALUE'
+        reasons.append(f'F1={f1:.1f}, solid contributor')
+        if control < 1.5:
+            reasons.append('short control window — rental only')
+    elif f1 >= 2.0:
+        label = 'OVERPRICED'
+        reasons.append(f'F1={f1:.1f} — below replacement threshold for cost')
+        if control <= 1.0:
+            reasons.append('near FA — limited leverage')
+    else:
+        label = 'PASS'
+        reasons.append(f'F1={f1:.1f} — below useful threshold')
+
+    if mode == 'Rebuilding' and control < 2.0:
+        label = 'PASS'
+        reasons.append('rebuilding mode — need 2+ yr control')
+
+    return label, ' | '.join(reasons)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODE 2 — SLACK EVAL
+# ══════════════════════════════════════════════════════════════════════════════
+
 def render_mode2(league: League):
-    st.info("**Mode 2 — Quick Eval from Slack** is coming. "
-            "Paste a Slack thread or player list; get instant verdicts against your team's lens.")
+    """Mode 2: Read from TradeTalk Google Sheet, match against league CSV, show verdicts."""
+
+    tc      = league.team_config
+    my_team = tc.get('my_team', '')
+
+    st.markdown("#### Slack Trade Talk — Live Verdicts")
+    st.caption("Reads from your AC Trade Monitor Google Sheet. Upload league CSV to get verdicts.")
+
+    # ── Config inputs ─────────────────────────────────────────────────────────
+    c1, c2 = st.columns(2)
+    with c1:
+        sheet_id = st.text_input(
+            "Google Sheet ID",
+            value=league.team_config.get('trade_sheet_id', ''),
+            placeholder='1QQ-XsSXEJSQqf...',
+            key='m2_sheet_id',
+            help="From your AC Trade Monitor sheet URL"
+        )
+        if sheet_id and sheet_id != league.team_config.get('trade_sheet_id', ''):
+            league.save_team_config({'trade_sheet_id': sheet_id})
+
+    with c2:
+        uploaded = st.file_uploader(
+            "League CSV (for matching)",
+            type=['csv'],
+            key='m2_upload',
+            help="Same export as Mode 1"
+        )
+
+    if not sheet_id:
+        st.info("Enter your Google Sheet ID above to load trade talk data.")
+        return
+
+    if uploaded is None:
+        st.info("Upload your league CSV to match players and get verdicts.")
+        return
+
+    # ── Load data ─────────────────────────────────────────────────────────────
+    with st.spinner("Loading trade talk from Google Sheet..."):
+        result = fetch_trade_talk_sheet(sheet_id)
+        if isinstance(result, tuple):
+            st.error(f"Could not read Google Sheet: {result[1]}")
+            return
+        talk_df = result
+
+    if talk_df is None or talk_df.empty:
+        st.warning("No trade talk data found in sheet. Check that the TradeTalk tab has rows.")
+        return
+
+    with st.spinner("Loading league CSV..."):
+        try:
+            raw    = pd.read_csv(uploaded, encoding='utf-8-sig', low_memory=False)
+            league_df = prep_data(raw)
+        except Exception as e:
+            st.error(f"Failed to read CSV: {e}")
+            return
+
+    # ── Filters ───────────────────────────────────────────────────────────────
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
+        direction_filter = st.multiselect(
+            "Trade Direction",
+            ['selling', 'buying', 'both', 'unknown'],
+            default=['selling'],
+            key='m2_direction'
+        )
+    with fc2:
+        # Get unique GMs from sheet
+        gm_list = sorted(talk_df['GM_Name'].dropna().unique()) if 'GM_Name' in talk_df.columns else []
+        gm_filter = st.multiselect("Filter by GM", gm_list, key='m2_gm')
+    with fc3:
+        conf_filter = st.multiselect(
+            "Confidence",
+            ['high', 'low'],
+            default=['high'],
+            key='m2_conf'
+        )
+
+    # Apply filters
+    filtered_talk = talk_df.copy()
+    if direction_filter and 'Trade_Direction' in filtered_talk.columns:
+        filtered_talk = filtered_talk[filtered_talk['Trade_Direction'].isin(direction_filter)]
+    if gm_filter and 'GM_Name' in filtered_talk.columns:
+        filtered_talk = filtered_talk[filtered_talk['GM_Name'].isin(gm_filter)]
+    if conf_filter and 'Confidence' in filtered_talk.columns:
+        filtered_talk = filtered_talk[filtered_talk['Confidence'].isin(conf_filter)]
+
+    # Deduplicate — one row per unique player name + org
+    if 'Player_Name' in filtered_talk.columns and 'GM_Team' in filtered_talk.columns:
+        filtered_talk = filtered_talk.drop_duplicates(
+            subset=['Player_Name', 'GM_Team']
+        ).reset_index(drop=True)
+
+    st.caption(f"{len(filtered_talk)} players in trade talk | {len(talk_df)} total entries in sheet")
+
+    # ── Match and evaluate ────────────────────────────────────────────────────
+    verdicts = []
+    for _, row in filtered_talk.iterrows():
+        player_name = str(row.get('Player_Name', '')).strip()
+        org         = str(row.get('GM_Team', '')).strip()
+        pos_hint    = str(row.get('Position_Hint', '')).strip()
+        contract    = str(row.get('Contract_Hint', '')).strip()
+        direction   = str(row.get('Trade_Direction', 'selling')).strip()
+        gm_name     = str(row.get('GM_Name', '')).strip()
+        summary     = str(row.get('Summary', '')).strip()
+        confidence  = str(row.get('Confidence', 'high')).strip()
+
+        if not player_name:
+            continue
+
+        # Skip own team's players
+        if org and my_team and org.lower() == my_team.lower():
+            continue
+
+        # Match against league CSV
+        match_result = match_player(player_name, org, league_df, direction)
+        if isinstance(match_result, tuple):
+            matched_row, ambiguous = match_result
+        else:
+            matched_row, ambiguous = match_result, False
+
+        if matched_row is None:
+            verdicts.append({
+                'Player':    player_name,
+                'GM':        gm_name,
+                'ORG':       org,
+                'POS':       pos_hint or '?',
+                'F1':        '—',
+                'TV':        '—',
+                'Control':   '—',
+                'Contract':  contract,
+                'Verdict':   'NOT FOUND',
+                'Reason':    'Not matched in league CSV — may be last name only or reserve roster',
+                'Luck':      '—',
+                'Flex':      '—',
+                'Conf':      confidence,
+                'Ambiguous': False,
+            })
+            continue
+
+        # Compute F1 and TV
+        r   = matched_row.to_dict()
+        pos = str(r.get('POS', pos_hint or ''))
+
+        if pos in PITCHER_POSITIONS:
+            f1_val = pitcher_f1(r)
+            luck   = 'N/A'
+            flex   = ''
+        elif pos in BATTER_POSITIONS:
+            f1_val = batter_f1(r)
+            luck   = babip_luck_flag(r)
+            flex   = flex_flag(r, tc.get('need_positions', []))
+        else:
+            continue
+
+        ml_yrs  = _s(r.get('ML_YRS',  0))
+        ml_days = _s(r.get('ML_DAYS', 0))
+        years   = _s(r.get('YEARS_LEFT', 0))
+        control = compute_control_window(years, ml_yrs, ml_days)
+        tv      = trade_value(f1_val, control, pos)
+
+        v_label, v_reason = verdict(f1_val, tv, control, tc, pos, luck)
+
+        # Boost to STRONG BUY if BAD_LUCK + high F1
+        if luck == 'BAD_LUCK' and f1_val >= 4.0 and v_label == 'FAIR VALUE':
+            v_label  = 'STRONG BUY'
+            v_reason = 'BAD_LUCK + strong ratings = buy-low | ' + v_reason
+
+        verdicts.append({
+            'Player':    r.get('Name', player_name),
+            'GM':        gm_name,
+            'ORG':       org or r.get('ORG', ''),
+            'POS':       pos,
+            'F1':        round(f1_val, 2),
+            'TV':        tv,
+            'Control':   control,
+            'Contract':  contract,
+            'Verdict':   v_label,
+            'Reason':    v_reason,
+            'Luck':      luck,
+            'Flex':      flex,
+            'Conf':      confidence,
+            'Ambiguous': ambiguous,
+        })
+
+    if not verdicts:
+        st.info("No players matched after filtering. Try changing direction or confidence filters.")
+        return
+
+    out = pd.DataFrame(verdicts)
+
+    # Sort: STRONG BUY first, then FAIR VALUE, then rest
+    order = {'STRONG BUY': 0, 'FAIR VALUE': 1, 'OVERPRICED': 2, 'PASS': 3, 'NOT FOUND': 4}
+    out['_sort'] = out['Verdict'].map(order).fillna(5)
+    out = out.sort_values('_sort').drop(columns=['_sort']).reset_index(drop=True)
+
+    # ── Display ───────────────────────────────────────────────────────────────
+    # Color-code verdict column
+    def color_verdict(val):
+        colors = {
+            'STRONG BUY': 'background-color: #1a4a1a; color: #90ee90',
+            'FAIR VALUE': 'background-color: #1a3a4a; color: #87ceeb',
+            'OVERPRICED': 'background-color: #4a3a1a; color: #ffd700',
+            'PASS':       'background-color: #3a1a1a; color: #ff6b6b',
+            'NOT FOUND':  'background-color: #2a2a2a; color: #888888',
+        }
+        return colors.get(val, '')
+
+    display_cols = [c for c in [
+        'Player', 'GM', 'ORG', 'POS', 'F1', 'TV', 'Control',
+        'Contract', 'Verdict', 'Reason', 'Luck', 'Flex', 'Conf'
+    ] if c in out.columns]
+
+    # Flag ambiguous matches
+    ambiguous_count = out['Ambiguous'].sum() if 'Ambiguous' in out.columns else 0
+    if ambiguous_count > 0:
+        st.warning(f"{ambiguous_count} player(s) matched on last name only — verify before acting.")
+
+    st.dataframe(
+        out[display_cols].style.applymap(color_verdict, subset=['Verdict']),
+        use_container_width=True,
+        height=600,
+        hide_index=True,
+    )
+
+    # Summary counts
+    vc = out['Verdict'].value_counts()
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("STRONG BUY", vc.get('STRONG BUY', 0))
+    s2.metric("FAIR VALUE", vc.get('FAIR VALUE', 0))
+    s3.metric("OVERPRICED", vc.get('OVERPRICED', 0))
+    s4.metric("PASS",       vc.get('PASS', 0))
+
+    st.download_button(
+        "⬇️ Download verdicts",
+        data=out[display_cols].to_csv(index=False),
+        file_name="slack_eval_verdicts.csv",
+        mime="text/csv",
+        key='m2_download'
+    )
 
 
 def render_mode3(league: League):
