@@ -6,6 +6,7 @@ import streamlit as st
 import pandas as pd
 import db
 import acquisitions as acq
+import my_team as mt
 
 st.set_page_config(
     page_title="OOTP 27 Suite",
@@ -84,8 +85,7 @@ if section == "🔄 Acquisitions":
     acq.render_acquisitions(league)
 
 elif section == "📊 My Team":
-    st.header("📊 My Team")
-    st.info("Coming soon — roster overview, F1 by position, WAR pace, service time dashboard.")
+    mt.render_my_team(league)
 
 elif section == "⚾ Lineups":
     st.header("⚾ Lineups")

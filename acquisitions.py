@@ -590,24 +590,67 @@ def trade_value(f1: float, control_window: float, pos: str) -> float:
 # BABIP LUCK FLAG
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _babip_rating_to_decimal(rating: float) -> float:
+    """
+    Convert a 20-80 BABIP rating to expected decimal BABIP.
+
+    Source: OOTP 27 A-T regression on player_cross_section_full.parquet
+            Filter: ORG != "-" AND AGE 23-27 AND PA >= 100 (canonical)
+            N = 16,023 across seasons 1976-1990
+            BAT_BABIP_STAT ≈ 0.2074 + 0.001573 × BABIP_rating
+            R² = 0.214, residual SD = 0.0306
+
+    Predicted at key ratings: 20→.239, 50→.286 (median), 80→.333.
+    Era-robust across 1976-1990 (slope SD ~8% of slope).
+    """
+    return 0.2074 + 0.001573 * rating
+
+
+# Luck flag thresholds — multiples of residual SD (0.0306 from regression).
+# Moderate band: |residual| in [0.030, 0.050) → ~1.0–1.6 SD
+# Strong band:   |residual| ≥ 0.050           → ~1.6+ SD (actionable)
+_BABIP_MODERATE_THRESHOLD = 0.030
+_BABIP_STRONG_THRESHOLD   = 0.050
+
+
 def babip_luck_flag(row) -> str:
     """
-    Compare observed BABIP stat to expected BABIP from ratings.
-    BAD_LUCK  → observed << expected (buy signal)
-    HOT_LUCK  → observed >> expected (sell signal)
-    NEUTRAL   → within noise
-    Registry: mean reversion +0.79 WAR for 400+ PA underperformers.
+    Compare observed BABIP stat to rating-predicted BABIP and return a tiered flag.
+
+    Returns one of:
+      'STRONG_BUY'  → observed ≤ predicted − 0.050  (actionable buy-low, ~1.6+ SD)
+      'BUY_LOW'     → observed ≤ predicted − 0.030  (moderate underperformer)
+      'NEUTRAL'     → within ±0.030 of predicted
+      'SELL_HIGH'   → observed ≥ predicted + 0.030  (moderate overperformer)
+      'STRONG_SELL' → observed ≥ predicted + 0.050  (actionable sell-high)
+      'NEUTRAL'     → if either input is zero/missing (insufficient data)
+
+    Registry: 47% mean reversion for 400+ PA underperformers (+0.79 WAR mean
+    recovery). The trade edge is the residual, which is largely luck (plus
+    park, IF defense behind hitter, BIP composition).
     """
     observed = _s(row.get('BAT_BABIP_STAT', row.get('BABIP', 0)))
-    expected = _s(row.get('BAT_BABIP_RATING', 0))
-    if observed == 0 or expected == 0:
+    rating   = _s(row.get('BAT_BABIP_RATING', 0))
+    if observed == 0 or rating == 0:
         return 'NEUTRAL'
-    diff = observed - expected
-    if diff < -0.030:
-        return 'BAD_LUCK'
-    elif diff > 0.030:
-        return 'HOT_LUCK'
+
+    predicted = _babip_rating_to_decimal(rating)
+    diff = observed - predicted
+
+    if diff <= -_BABIP_STRONG_THRESHOLD:
+        return 'STRONG_BUY'
+    elif diff <= -_BABIP_MODERATE_THRESHOLD:
+        return 'BUY_LOW'
+    elif diff >= _BABIP_STRONG_THRESHOLD:
+        return 'STRONG_SELL'
+    elif diff >= _BABIP_MODERATE_THRESHOLD:
+        return 'SELL_HIGH'
     return 'NEUTRAL'
+
+
+# Helpful sets for downstream callsite checks
+BUY_LUCK_FLAGS  = {'STRONG_BUY', 'BUY_LOW'}
+SELL_LUCK_FLAGS = {'STRONG_SELL', 'SELL_HIGH'}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -721,7 +764,7 @@ def market_score(row, team_records: dict | None = None) -> float:
     Inputs used:
       - AGE: veterans 28+ score higher
       - Team record: rebuilders (sub-.450 win%) score higher
-      - BABIP luck: HOT_LUCK (selling high) gets a bump
+      - BABIP luck: SELL_HIGH / STRONG_SELL (selling high) gets a bump
       - YEARS_LEFT: short contract on rebuilder = motivated seller
       - ON_WAIVERS / IS_DFA: hard signal
       - SP/RP FATIGUE: fatigued pitcher on a bad team = available
@@ -762,8 +805,8 @@ def market_score(row, team_records: dict | None = None) -> float:
             score += 0.8
 
     # BABIP luck — if they're playing above their ratings, selling high is rational
-    if luck == 'HOT_LUCK':
-        score += 0.5
+    if luck in SELL_LUCK_FLAGS:
+        score += 0.8 if luck == 'STRONG_SELL' else 0.5
 
     # Fatigue — worn-out pitcher on a bad team
     if pos in PITCHER_POSITIONS:
@@ -1303,8 +1346,9 @@ def render_mode1(league: League):
 
     fc6, fc7 = st.columns(2)
     with fc6:
-        luck_filter = st.multiselect("BABIP Flag", ['BAD_LUCK', 'NEUTRAL', 'HOT_LUCK', 'N/A'],
-                                      default=['BAD_LUCK', 'NEUTRAL', 'N/A'], key='m1_luck')
+        luck_filter = st.multiselect("BABIP Flag",
+                                      ['STRONG_BUY', 'BUY_LOW', 'NEUTRAL', 'SELL_HIGH', 'STRONG_SELL', 'N/A'],
+                                      default=['STRONG_BUY', 'BUY_LOW', 'NEUTRAL', 'N/A'], key='m1_luck')
     with fc7:
         sort_col = st.selectbox("Sort by", ['Score', 'TV', 'F1', 'Market', 'Fit', 'Age'],
                                  key='m1_sort')
@@ -1358,7 +1402,9 @@ def render_mode1(league: League):
                 "**Market** = likelihood their team trades them (0-10). "
                 "**Fit** = match to your team's needs (0-10). "
                 "**Score** = weighted aggregate. "
-                "**Luck**: BAD_LUCK = buy signal (underperforming ratings). "
+                "**Luck**: STRONG_BUY / BUY_LOW = underperforming ratings (buy signal); "
+                "STRONG_SELL / SELL_HIGH = overperforming ratings (other team's sell signal). "
+                "Calibrated to OOTP 27 A-T: predicted BABIP = 0.2074 + 0.001573 × rating, residual SD = 0.0306. "
                 "**Flex**: positions player could learn based on underlying skills (IF_RNG, OF_RNG, C_ABI ≥40)."
             )
             st.dataframe(
@@ -1480,7 +1526,7 @@ def verdict(f1: float, tv: float, control: float, tc: dict,
     """
     Returns (verdict_label, one_line_reason) based on F1, TV, fit context.
 
-    STRONG BUY  — high F1, good control, fits team needs, possibly BAD_LUCK
+    STRONG BUY  — high F1, good control, fits team needs, possibly BUY_LOW/STRONG_BUY luck
     FAIR VALUE  — solid player, reasonable ask
     OVERPRICED  — low control or aging with high TV expectation
     PASS        — low F1, wrong fit, or Unmotivated/Disruptive
@@ -1493,8 +1539,9 @@ def verdict(f1: float, tv: float, control: float, tc: dict,
     if f1 >= 5.0 and control >= 2.0:
         label = 'STRONG BUY'
         reasons.append(f'F1={f1:.1f}, {control:.1f}yr control')
-        if luck == 'BAD_LUCK':
-            reasons.append('buy-low opportunity (BABIP luck)')
+        if luck in BUY_LUCK_FLAGS:
+            note = 'strong buy-low opportunity (BABIP luck)' if luck == 'STRONG_BUY' else 'buy-low opportunity (BABIP luck)'
+            reasons.append(note)
         if pos in need_pos:
             reasons.append(f'fills {pos} need')
     elif f1 >= 3.5 and control >= 1.0:
@@ -1692,10 +1739,10 @@ def render_mode2(league: League):
 
         v_label, v_reason = verdict(f1_val, tv, control, tc, pos, luck)
 
-        # Boost to STRONG BUY if BAD_LUCK + high F1
-        if luck == 'BAD_LUCK' and f1_val >= 4.0 and v_label == 'FAIR VALUE':
+        # Boost to STRONG BUY if BUY_LOW/STRONG_BUY luck + high F1
+        if luck in BUY_LUCK_FLAGS and f1_val >= 4.0 and v_label == 'FAIR VALUE':
             v_label  = 'STRONG BUY'
-            v_reason = 'BAD_LUCK + strong ratings = buy-low | ' + v_reason
+            v_reason = f'{luck} + strong ratings = buy-low | ' + v_reason
 
         verdicts.append({
             'Player':    r.get('Name', player_name),
@@ -1775,7 +1822,7 @@ def render_mode3(league: League):
     """
     Mode 3 — Free Agents
     Filter ORG == '-', score by F1 and Fit, surface demand vs headroom,
-    flag Rock and Roll archetypes (WE=L + age 30+ + HOT_LUCK).
+    flag Rock and Roll archetypes (WE=L + age 30+ + SELL_HIGH/STRONG_SELL).
     """
     tc      = league.team_config
     my_team = tc.get('my_team', '')
@@ -1866,11 +1913,11 @@ def render_mode3(league: League):
             continue
 
         # Rock and Roll archetype flag
-        # WE=L + age 30+ + HOT_LUCK (outperforming ratings on small sample)
+        # WE=L + age 30+ + sell-side luck (outperforming ratings on small sample)
         is_rock_roll = (
             we == 'L' and
             age >= 30 and
-            luck == 'HOT_LUCK'
+            luck in SELL_LUCK_FLAGS
         )
 
         # Demand and headroom
@@ -1885,9 +1932,9 @@ def render_mode3(league: League):
         # Fit score (no market score for FAs)
         fit, missing_cfg = fit_score(r, tc)
 
-        # Boost fit for BAD_LUCK batters
-        if luck == 'BAD_LUCK' and f1_val >= 3.0:
-            fit = min(10.0, fit + 0.5)
+        # Boost fit for buy-luck batters (STRONG_BUY gets a bigger bump)
+        if luck in BUY_LUCK_FLAGS and f1_val >= 3.0:
+            fit = min(10.0, fit + (0.8 if luck == 'STRONG_BUY' else 0.5))
 
         # Penalty for Rock and Roll
         if is_rock_roll:
