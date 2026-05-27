@@ -1757,9 +1757,228 @@ def render_mode2(league: League):
 
 
 def render_mode3(league: League):
-    st.info("**Mode 3 — Free Agents** is coming. "
-            "Browse available free agents ranked by fit, with demand column auto-detection and "
-            "Rock-and-Roll archetype flags (aging vet + Low WE + hot small-sample stats).")
+    """
+    Mode 3 — Free Agents
+    Filter ORG == '-', score by F1 and Fit, surface demand vs headroom,
+    flag Rock and Roll archetypes (WE=L + age 30+ + HOT_LUCK).
+    """
+    tc      = league.team_config
+    my_team = tc.get('my_team', '')
+    mode    = tc.get('mode', 'Competing')
+    payroll = _s(tc.get('payroll_current', 0))
+    tax     = _s(tc.get('tax_threshold', 0))
+    need_pos = tc.get('need_positions', [])
+
+    st.markdown("#### Free Agents")
+    st.caption("Players with no team (ORG = '-'). Scored by Fit — no Market friction.")
+
+    uploaded = st.file_uploader(
+        "League CSV",
+        type=['csv'],
+        key='m3_upload',
+        help="Same combined export as Mode 1. Free agents appear with ORG = '-'."
+    )
+
+    if uploaded is None:
+        st.info("Upload your league CSV to browse free agents.")
+        return
+
+    with st.spinner("Loading..."):
+        try:
+            raw = pd.read_csv(uploaded, encoding='utf-8-sig', low_memory=False)
+            df  = prep_data(raw)
+        except Exception as e:
+            st.error(f"Failed to read CSV: {e}")
+            return
+
+    # Filter to free agents only
+    fa_df = df[df['ORG'].astype(str).str.strip() == '-'].copy()
+
+    if fa_df.empty:
+        st.warning("No free agents found in this export (no rows with ORG = '-'). "
+                   "Free agents are most common during the offseason or after releases.")
+        return
+
+    st.caption(f"{len(fa_df)} free agents found in export")
+
+    # ── Filters ───────────────────────────────────────────────────────────────
+    fc1, fc2, fc3, fc4 = st.columns(4)
+    with fc1:
+        role_filter = st.radio("Role", ['All', 'Batters', 'Pitchers'],
+                               horizontal=True, key='m3_role')
+    with fc2:
+        all_pos = sorted(fa_df['POS'].dropna().unique())
+        if role_filter == 'Batters':
+            pos_options = [p for p in all_pos if p in BATTER_POSITIONS]
+        elif role_filter == 'Pitchers':
+            pos_options = [p for p in all_pos if p in PITCHER_POSITIONS]
+        else:
+            pos_options = all_pos
+        pos_filter = st.multiselect("Position", pos_options, key='m3_pos')
+    with fc3:
+        age_range = st.slider("Age", min_value=20, max_value=45,
+                              value=(20, 38), key='m3_age')
+    with fc4:
+        f1_floor = st.slider("Min F1", min_value=0.0, max_value=6.0,
+                             value=1.0, step=0.5, key='m3_f1')
+
+    rr_only = st.checkbox("Show Rock & Roll archetypes only", key='m3_rr',
+                          help="WE=Low + Age 30+ + hot BABIP stats — looks great but likely regressing")
+
+    # ── Evaluate ──────────────────────────────────────────────────────────────
+    results = []
+    for _, row in fa_df.iterrows():
+        r   = row.to_dict()
+        pos = str(r.get('POS', ''))
+        age = _s(r.get('AGE', r.get('Age', 25)))
+
+        if pos in PITCHER_POSITIONS:
+            f1_val = pitcher_f1(r)
+            luck   = 'N/A'
+            flex   = ''
+            we     = ''
+        elif pos in BATTER_POSITIONS:
+            f1_val = batter_f1(r)
+            luck   = babip_luck_flag(r)
+            flex   = flex_flag(r, need_pos)
+            we     = str(r.get('WE', r.get('Work Ethic', ''))).strip()
+        else:
+            continue
+
+        # Personality hard skip
+        personality = str(r.get('Personality', r.get('Type', '')))
+        if personality in ('Unmotivated', 'Disruptive'):
+            continue
+
+        # Rock and Roll archetype flag
+        # WE=L + age 30+ + HOT_LUCK (outperforming ratings on small sample)
+        is_rock_roll = (
+            we == 'L' and
+            age >= 30 and
+            luck == 'HOT_LUCK'
+        )
+
+        # Demand and headroom
+        demand   = _s(r.get('FA_DEMAND', 0))
+        fits_budget = None
+        if tax > 0 and payroll > 0:
+            headroom    = tax - payroll
+            fits_budget = demand <= headroom
+        elif tax > 0:
+            fits_budget = demand <= tax
+
+        # Fit score (no market score for FAs)
+        fit, missing_cfg = fit_score(r, tc)
+
+        # Boost fit for BAD_LUCK batters
+        if luck == 'BAD_LUCK' and f1_val >= 3.0:
+            fit = min(10.0, fit + 0.5)
+
+        # Penalty for Rock and Roll
+        if is_rock_roll:
+            fit = max(0.0, fit - 2.0)
+
+        results.append({
+            'Name':       r.get('Name', ''),
+            'POS':        pos,
+            'Age':        int(age),
+            'F1':         round(f1_val, 2),
+            'Fit':        fit,
+            'Demand':     int(demand) if demand > 0 else '—',
+            'Budget_OK':  ('✓' if fits_budget else '✗') if fits_budget is not None else '—',
+            'Luck':       luck,
+            'WE':         we,
+            'Flex':       flex,
+            'RockRoll':   '⚠️ R&R' if is_rock_roll else '',
+            'FA_Type':    str(r.get('FA_TYPE', '')).strip(),
+            'CON':        int(_s(r.get('CON', 0))) if pos in BATTER_POSITIONS else None,
+            'POW':        int(_s(r.get('POW', 0))) if pos in BATTER_POSITIONS else None,
+            'EYE':        int(_s(r.get('EYE', 0))) if pos in BATTER_POSITIONS else None,
+            'STU':        int(_s(r.get('STU', 0))) if pos in PITCHER_POSITIONS else None,
+            'MOV':        int(_s(r.get('MOV', 0))) if pos in PITCHER_POSITIONS else None,
+            'PIT_CON':    int(_s(r.get('PIT_CON', 0))) if pos in PITCHER_POSITIONS else None,
+            'STM':        int(_s(r.get('STM', 0))) if pos in PITCHER_POSITIONS else None,
+            'PRONE':      str(r.get('PRONE', '')),
+        })
+
+    if not results:
+        st.info("No free agents match the current filters.")
+        return
+
+    out = pd.DataFrame(results)
+
+    # Apply filters
+    mask = (
+        (out['Age'] >= age_range[0]) &
+        (out['Age'] <= age_range[1]) &
+        (out['F1'] >= f1_floor)
+    )
+    if role_filter == 'Batters':
+        mask &= out['POS'].isin(BATTER_POSITIONS)
+    elif role_filter == 'Pitchers':
+        mask &= out['POS'].isin(PITCHER_POSITIONS)
+    if pos_filter:
+        mask &= out['POS'].isin(pos_filter)
+    if rr_only:
+        mask &= out['RockRoll'] != ''
+
+    filtered = out[mask].sort_values('Fit', ascending=False).reset_index(drop=True)
+
+    st.markdown(f"#### Free Agent Candidates — {len(filtered)} shown")
+
+    # Split batter / pitcher tabs
+    t_bat, t_pit = st.tabs(["⚾ Batters", "🥎 Pitchers"])
+
+    bat = filtered[filtered['POS'].isin(BATTER_POSITIONS)]
+    pit = filtered[filtered['POS'].isin(PITCHER_POSITIONS)]
+
+    bat_cols = [c for c in [
+        'Name', 'POS', 'Age', 'F1', 'Fit', 'Demand', 'Budget_OK',
+        'Luck', 'WE', 'Flex', 'RockRoll',
+        'CON', 'POW', 'EYE', 'PRONE'
+    ] if c in bat.columns]
+
+    pit_cols = [c for c in [
+        'Name', 'POS', 'Age', 'F1', 'Fit', 'Demand', 'Budget_OK',
+        'RockRoll', 'STU', 'MOV', 'PIT_CON', 'STM', 'PRONE'
+    ] if c in pit.columns]
+
+    with t_bat:
+        if bat.empty:
+            st.info("No batter free agents match filters.")
+        else:
+            st.caption(
+                "**Fit** = match to your team needs (0-10). "
+                "**Demand** = asking salary. "
+                "**Budget_OK** = demand fits within tax headroom. "
+                "**WE** = Work Ethic (L=Low). "
+                "**R&R** = Rock & Roll archetype — WE=Low + Age 30+ + hot stats. Avoid."
+            )
+            st.dataframe(bat[bat_cols], use_container_width=True,
+                        height=500, hide_index=True)
+
+    with t_pit:
+        if pit.empty:
+            st.info("No pitcher free agents match filters.")
+        else:
+            st.caption(
+                "**Fit** = match to your team needs (0-10). "
+                "**Demand** = asking salary. "
+                "**Budget_OK** = demand fits within tax headroom. "
+                "**R&R** = Rock & Roll archetype — WE=Low + Age 30+ + hot stats. Avoid."
+            )
+            st.dataframe(pit[pit_cols], use_container_width=True,
+                        height=500, hide_index=True)
+
+    # Download
+    csv_out = filtered.to_csv(index=False)
+    st.download_button(
+        "⬇️ Download free agent list",
+        data=csv_out,
+        file_name="free_agents.csv",
+        mime="text/csv",
+        key='m3_download'
+    )
 
 
 def render_mode4(league: League):
