@@ -266,10 +266,23 @@ def _parse_velo(v) -> float:
 
 
 def _parse_salary(v) -> float:
-    """Parse '$10 000' or '$1,500,000' salary strings → float."""
-    if pd.isna(v) or v == '' or v == '-':
+    """Parse salary strings → float.
+    Handles: '$10 000', '$1,500,000', '$11k', '$1.5M'
+    """
+    if pd.isna(v) or str(v).strip() in ('', '-'):
         return 0.0
-    digits = re.sub(r'[^\d]', '', str(v))
+    s = str(v).strip().upper().replace(',', '').replace(' ', '')
+    # Remove leading $
+    s = s.lstrip('$')
+    # Handle k/M suffixes
+    if s.endswith('K'):
+        try: return float(s[:-1]) * 1000
+        except: return 0.0
+    if s.endswith('M'):
+        try: return float(s[:-1]) * 1_000_000
+        except: return 0.0
+    # Plain number
+    digits = re.sub(r'[^\d.]', '', s)
     return float(digits) if digits else 0.0
 
 
@@ -287,9 +300,11 @@ def prep_data(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df['velo_mid'] = 0.0
 
-    # Step 3 — parse salary string ($10 000 → 10000)
+    # Step 3 — parse salary/demand strings
     if 'SALARY' in df.columns:
         df['SALARY'] = df['SALARY'].apply(_parse_salary)
+    if 'FA_DEMAND' in df.columns:
+        df['FA_DEMAND'] = df['FA_DEMAND'].apply(_parse_salary)
 
     # Step 4 — numeric coercion
     for col in NUMERIC_COLS + ['velo_mid']:
