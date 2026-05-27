@@ -1618,7 +1618,7 @@ def render_mode2(league: League):
         if not player_name:
             continue
 
-        # Skip own team's players
+        # Skip own team's players — check sheet GM_Team first
         if org and my_team and org.lower() == my_team.lower():
             continue
 
@@ -1628,6 +1628,12 @@ def render_mode2(league: League):
             matched_row, ambiguous = match_result
         else:
             matched_row, ambiguous = match_result, False
+
+        # Second own-team check — use actual ORG from matched CSV row
+        if matched_row is not None and my_team:
+            matched_org = str(matched_row.get('ORG', '')).strip()
+            if matched_org.lower() == my_team.lower():
+                continue
 
         if matched_row is None:
             verdicts.append({
