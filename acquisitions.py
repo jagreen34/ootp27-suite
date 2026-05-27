@@ -1997,9 +1997,321 @@ def render_mode3(league: League):
 
 
 def render_mode4(league: League):
-    st.info("**Mode 4 — Build a Deal** is coming. "
-            "Select a target from Mode 1-3; get feasibility-filtered package suggestions "
-            "based on what the other team actually needs, not just value equivalence.")
+    """
+    Mode 4 — Build a Deal v0.1
+    Single league CSV upload. Select a target player.
+    Shows: their team's situation, your tradeable assets,
+    and basic package suggestions ranked by feasibility.
+    """
+    tc       = league.team_config
+    my_team  = tc.get('my_team', '')
+    mode     = tc.get('mode', 'Competing')
+    untouchables = [u.lower().strip() for u in tc.get('untouchables', [])]
+
+    st.markdown("#### Build a Deal")
+    st.caption("Select a target player. See their team's situation and what you can offer.")
+
+    if not my_team:
+        st.warning("Set your team in Settings first.")
+        return
+
+    uploaded = st.file_uploader(
+        "League CSV",
+        type=['csv'],
+        key='m4_upload',
+        help="Same combined export as Modes 1-3."
+    )
+
+    if uploaded is None:
+        st.info("Upload your league CSV to begin.")
+        return
+
+    with st.spinner("Loading..."):
+        try:
+            raw       = pd.read_csv(uploaded, encoding='utf-8-sig', low_memory=False)
+            league_df = prep_data(raw)
+        except Exception as e:
+            st.error(f"Failed to read CSV: {e}")
+            return
+
+    # ── Separate rosters ──────────────────────────────────────────────────────
+    my_roster    = league_df[league_df['ORG'].astype(str).str.strip() == my_team].copy()
+    other_teams  = league_df[
+        (league_df['ORG'].astype(str).str.strip() != my_team) &
+        (league_df['ORG'].astype(str).str.strip() != '-')
+    ].copy()
+
+    if my_roster.empty:
+        st.error(f"No players found for '{my_team}'. Check Team Config matches export exactly.")
+        return
+
+    # ── Target player selector ────────────────────────────────────────────────
+    st.markdown("#### 1. Select Target Player")
+
+    # Build target list from other teams — active roster players only
+    target_options = []
+    for _, row in other_teams.iterrows():
+        pos = str(row.get('POS', ''))
+        if pos not in BATTER_POSITIONS and pos not in PITCHER_POSITIONS:
+            continue
+        name = str(row.get('Name', ''))
+        org  = str(row.get('ORG', ''))
+        target_options.append(f"{name} ({pos}, {org})")
+
+    if not target_options:
+        st.warning("No other-team players found.")
+        return
+
+    target_options.sort()
+    selected = st.selectbox("Target player", target_options, key='m4_target')
+
+    if not selected:
+        return
+
+    # Parse selection
+    target_name = selected.split(' (')[0].strip()
+    target_rows = other_teams[other_teams['Name'] == target_name]
+    if target_rows.empty:
+        st.error("Player not found.")
+        return
+
+    target     = target_rows.iloc[0].to_dict()
+    target_pos = str(target.get('POS', ''))
+    target_org = str(target.get('ORG', ''))
+    target_age = _s(target.get('AGE', target.get('Age', 25)))
+
+    # Compute target F1 and TV
+    if target_pos in PITCHER_POSITIONS:
+        target_f1 = pitcher_f1(target)
+    else:
+        target_f1 = batter_f1(target)
+
+    target_years   = _s(target.get('YEARS_LEFT', 0))
+    target_ml_yrs  = _s(target.get('ML_YRS', 0))
+    target_ml_days = _s(target.get('ML_DAYS', 0))
+    target_control = compute_control_window(target_years, target_ml_yrs, target_ml_days)
+    target_tv      = trade_value(target_f1, target_control, target_pos)
+    target_arb     = compute_arb_status(target_ml_yrs, target_ml_days)
+    target_salary  = _s(target.get('SALARY', 0))
+
+    # ── Target player card ────────────────────────────────────────────────────
+    st.markdown("---")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("F1", f"{target_f1:.2f}")
+    c2.metric("Trade Value", f"{target_tv:.1f}")
+    c3.metric("Control", f"{target_control:.1f} yr")
+    c4.metric("Age", int(target_age))
+    c5.metric("Status", target_arb)
+    c6.metric("Salary", f"${int(target_salary):,}" if target_salary > 0 else "—")
+
+    # Feasibility of this target
+    mkt = market_score(target, None)
+    st.caption(f"Market feasibility: **{mkt:.1f}/10** — "
+               f"{'motivated seller' if mkt >= 7 else 'neutral' if mkt >= 4 else 'unlikely to move'}")
+
+    if mkt < 3:
+        st.warning("Low market score — this player is unlikely to be available. "
+                   "Consider targets with higher market scores from Mode 1.")
+
+    # ── Their team situation ──────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(f"#### 2. {target_org} — Team Situation")
+
+    their_roster = other_teams[
+        other_teams['ORG'].astype(str).str.strip() == target_org
+    ].copy()
+
+    if their_roster.empty:
+        st.warning("Could not load their roster.")
+    else:
+        # Compute F1 for their roster
+        their_f1s = []
+        for _, row in their_roster.iterrows():
+            r   = row.to_dict()
+            pos = str(r.get('POS', ''))
+            if pos in PITCHER_POSITIONS:
+                f1 = pitcher_f1(r)
+            elif pos in BATTER_POSITIONS:
+                f1 = batter_f1(r)
+            else:
+                continue
+            their_f1s.append({
+                'Name': r.get('Name', ''),
+                'POS':  pos,
+                'Age':  int(_s(r.get('AGE', r.get('Age', 25)))),
+                'F1':   round(f1, 2),
+                'TV':   trade_value(f1,
+                         compute_control_window(
+                             _s(r.get('YEARS_LEFT', 0)),
+                             _s(r.get('ML_YRS', 0)),
+                             _s(r.get('ML_DAYS', 0))
+                         ), pos),
+                'YL':   _s(r.get('YEARS_LEFT', 0)),
+            })
+
+        their_df = pd.DataFrame(their_f1s)
+
+        if not their_df.empty:
+            # Identify weak positions — below league average F1 for that position
+            pos_avg = {}
+            for pos in BATTER_POSITIONS | PITCHER_POSITIONS:
+                pos_rows = league_df[league_df['POS'] == pos]
+                if not pos_rows.empty:
+                    f1s = []
+                    for _, r in pos_rows.iterrows():
+                        rd = r.to_dict()
+                        if pos in PITCHER_POSITIONS:
+                            f1s.append(pitcher_f1(rd))
+                        else:
+                            f1s.append(batter_f1(rd))
+                    pos_avg[pos] = np.mean(f1s) if f1s else 0
+
+            their_pos_avg = their_df.groupby('POS')['F1'].mean()
+            weak_positions = []
+            for pos, avg in their_pos_avg.items():
+                league_avg = pos_avg.get(pos, 0)
+                if avg < league_avg * 0.85:
+                    weak_positions.append(pos)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Roster Overview**")
+                st.caption(f"{len(their_df)} players | Avg F1: {their_df['F1'].mean():.2f}")
+                # Age distribution
+                avg_age = their_df['Age'].mean()
+                aging   = their_df[their_df['Age'] >= 30]
+                st.caption(f"Avg age: {avg_age:.1f} | Players 30+: {len(aging)}")
+                if weak_positions:
+                    st.markdown(f"**Weak positions:** {', '.join(weak_positions)}")
+                else:
+                    st.markdown("No obviously weak positions identified.")
+
+            with col2:
+                st.markdown("**Their Roster (sorted by F1)**")
+                display = their_df.sort_values('F1', ascending=False).head(15)
+                st.dataframe(display[['Name','POS','Age','F1','TV','YL']],
+                            use_container_width=True, hide_index=True, height=300)
+
+    # ── Your tradeable assets ─────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### 3. Your Tradeable Assets")
+
+    my_assets = []
+    for _, row in my_roster.iterrows():
+        r   = row.to_dict()
+        pos = str(r.get('POS', ''))
+        name = str(r.get('Name', ''))
+
+        if pos not in BATTER_POSITIONS and pos not in PITCHER_POSITIONS:
+            continue
+        if name.lower().strip() in untouchables:
+            continue
+
+        if pos in PITCHER_POSITIONS:
+            f1 = pitcher_f1(r)
+        else:
+            f1 = batter_f1(r)
+
+        ml_yrs  = _s(r.get('ML_YRS', 0))
+        ml_days = _s(r.get('ML_DAYS', 0))
+        years   = _s(r.get('YEARS_LEFT', 0))
+        control = compute_control_window(years, ml_yrs, ml_days)
+        tv      = trade_value(f1, control, pos)
+        arb     = compute_arb_status(ml_yrs, ml_days)
+
+        my_assets.append({
+            'Name':    name,
+            'POS':     pos,
+            'Age':     int(_s(r.get('AGE', r.get('Age', 25)))),
+            'F1':      round(f1, 2),
+            'TV':      tv,
+            'Control': control,
+            'Arb':     arb,
+            'Salary':  int(_s(r.get('SALARY', 0))),
+        })
+
+    assets_df = pd.DataFrame(my_assets).sort_values('TV', ascending=False)
+
+    st.caption(f"{len(assets_df)} tradeable players (untouchables excluded)")
+    st.dataframe(assets_df, use_container_width=True, hide_index=True, height=300)
+
+    # ── Package suggestions ───────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### 4. Package Suggestions")
+    st.caption("Ranked by feasibility — why would they say yes?")
+
+    if their_df.empty or assets_df.empty:
+        st.info("Need both rosters loaded to suggest packages.")
+        return
+
+    suggestions = []
+
+    for _, asset in assets_df.iterrows():
+        asset_pos = asset['POS']
+        asset_tv  = asset['TV']
+        asset_f1  = asset['F1']
+        asset_age = asset['Age']
+
+        # Skip assets with no trade value
+        if asset_tv <= 0:
+            continue
+
+        # Does this asset address one of their weak positions?
+        addresses_need = asset_pos in weak_positions if 'weak_positions' in dir() else False
+
+        # Feasibility reasons — why would they want this?
+        reasons = []
+
+        if addresses_need:
+            reasons.append(f"fills their {asset_pos} gap")
+        if asset_age <= 25 and mode == 'Competing':
+            reasons.append("young controllable player")
+        if asset_f1 >= 4.0:
+            reasons.append(f"strong F1={asset_f1:.1f}")
+        if asset['Arb'] == 'Pre-Arb':
+            reasons.append("pre-arb cost control")
+        if asset['Control'] >= 2.0:
+            reasons.append(f"{asset['Control']:.1f}yr control")
+
+        # TV gap — is this a fair ask?
+        tv_gap   = target_tv - asset_tv
+        tv_ratio = asset_tv / target_tv if target_tv > 0 else 0
+
+        if tv_ratio >= 0.8:
+            tv_note = "near value match"
+        elif tv_ratio >= 0.5:
+            tv_note = "need to add to match value"
+        else:
+            tv_note = "significant value gap — need multiple pieces"
+
+        if reasons:  # Only suggest if there's a real reason they'd want it
+            suggestions.append({
+                'Offer':    asset['Name'],
+                'POS':      asset_pos,
+                'Age':      asset_age,
+                'F1':       asset_f1,
+                'TV':       asset_tv,
+                'TV_Gap':   round(tv_gap, 1),
+                'Why_Yes':  ' | '.join(reasons),
+                'TV_Note':  tv_note,
+                'Priority': len(reasons) * 2 + (1 if addresses_need else 0),
+            })
+
+    if suggestions:
+        sug_df = pd.DataFrame(suggestions).sort_values('Priority', ascending=False)
+        st.dataframe(
+            sug_df[['Offer','POS','Age','F1','TV','TV_Gap','Why_Yes','TV_Note']],
+            use_container_width=True, hide_index=True, height=400
+        )
+        st.caption(
+            "**TV_Gap** = target TV minus your offer TV. Positive = you need to add more. "
+            "Negative = you're offering more than the target's TV. "
+            "Feasibility matters more than exact TV match."
+        )
+    else:
+        st.info("No strong package suggestions found. "
+                "Your tradeable assets may not address their specific needs. "
+                "Consider adding prospects or picking a different target.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
