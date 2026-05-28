@@ -508,9 +508,10 @@ def render_my_team(league: League):
         expanded=not has_saved,
     ):
         st.caption(
-            "Upload your team's player export from OOTP 27. Single combined CSV "
-            "(batters + pitchers + prospects). This roster persists until you "
-            "upload a new one — other CSV uploads in the suite don't affect it."
+            "Upload a CSV export from OOTP 27. Can be your team-only export or the "
+            "full league export — the module will filter to your team automatically "
+            "using ORG. This roster persists until you upload a new one — other CSV "
+            "uploads in the suite don't affect it."
         )
         uploaded = st.file_uploader(
             "Roster CSV",
@@ -518,36 +519,72 @@ def render_my_team(league: League):
             key='myteam_upload',
         )
         if uploaded is not None:
-            try:
-                raw = pd.read_csv(uploaded, encoding='utf-8-sig', low_memory=False)
-                df  = prep_data(raw)
-                league.save_last_roster(df)
-                st.success(f"Roster saved — {len(df)} players.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to read CSV: {e}")
-                return
+            # Guard against infinite st.rerun() loop: file_uploader preserves the
+            # uploaded file across reruns. Track which file (by name+size) we've
+            # already processed so we don't re-save on every rerun.
+            upload_id = f"{uploaded.name}:{uploaded.size}"
+            last_processed = st.session_state.get('_myteam_last_upload_id')
+
+            if upload_id != last_processed:
+                try:
+                    # Read raw — DO NOT prep_data yet. Filter to my team first to avoid
+                    # running the heavy F1/rename pipeline on the entire league.
+                    raw = pd.read_csv(uploaded, encoding='utf-8-sig', low_memory=False)
+
+                    # Find the team column. ORG is canonical (registry A10) since
+                    # multiple cities share team names. TM is fallback.
+                    team_col = None
+                    for cand in ('ORG', 'TM', 'Team'):
+                        if cand in raw.columns:
+                            team_col = cand
+                            break
+                    if team_col is None:
+                        st.error("CSV has no ORG, TM, or Team column to filter on.")
+                        return
+
+                    team_rows = raw[raw[team_col].astype(str).str.strip() == my_team]
+                    if team_rows.empty:
+                        st.error(
+                            f"No players in the CSV with {team_col} == '{my_team}'. "
+                            f"Check that the team name in Settings matches the {team_col} "
+                            f"column exactly. Available teams: "
+                            f"{', '.join(sorted(raw[team_col].astype(str).unique())[:10])}..."
+                        )
+                        return
+
+                    # NOW run prep_data on just the team rows
+                    df = prep_data(team_rows.copy())
+                    league.save_last_roster(df)
+                    st.session_state['_myteam_last_upload_id'] = upload_id
+                    st.success(f"Roster saved — {len(df)} players from {my_team}.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to read CSV: {e}")
+                    return
 
     if not has_saved:
         st.info("Upload a roster CSV to begin.")
         return
 
-    df = prep_data(saved_df) if 'POS' not in saved_df.columns else saved_df.copy()
-    # Filter to my team only — defensive in case the export contains other teams
-    if 'TM' in df.columns:
-        df = df[df['TM'] == my_team].copy()
+    # Saved data is already prepped + filtered to my team — use it directly.
+    df = saved_df.copy()
+    # Defensive re-filter in case an older saved roster contained other teams
+    if 'ORG' in df.columns:
+        df = df[df['ORG'].astype(str).str.strip() == my_team].copy()
     if df.empty:
         st.error(
-            f"No players matching team name '{my_team}' found in the saved roster. "
-            "Check that the team name in ⚙️ Settings matches the export's TM column exactly."
+            f"No players for '{my_team}' in saved roster. Re-upload your CSV."
         )
         return
 
-    # Build the unified player table once — everything downstream reads from it
+    # Build the unified player table ONCE — slice it for active/reserve views
+    full_tbl = build_roster_table(df)
     active_raw, reserve_raw = split_active_reserve(df)
-    active_tbl  = build_roster_table(active_raw)
-    reserve_tbl = build_roster_table(reserve_raw)
-    full_tbl    = build_roster_table(df)
+    # For active/reserve sub-tables, build a Name set from each and slice full_tbl
+    active_names  = set(active_raw['Name'].astype(str)) if not active_raw.empty else set()
+    reserve_names = set(reserve_raw['Name'].astype(str)) if not reserve_raw.empty else set()
+    active_tbl    = full_tbl[full_tbl['Name'].isin(active_names)].copy()
+    reserve_tbl   = full_tbl[full_tbl['Name'].isin(reserve_names)].copy()
 
     # ── Header strip — always visible ────────────────────────────────────────
     payroll_curr = _s(tc.get('payroll_current', 0))
