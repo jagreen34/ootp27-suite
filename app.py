@@ -8,6 +8,7 @@ import db
 import acquisitions as acq
 import my_team as mt
 import lineups as ln
+import pitching as pit
 
 st.set_page_config(
     page_title="OOTP 27 Suite",
@@ -92,8 +93,7 @@ elif section == "⚾ Lineups":
     ln.render_lineups(league)
 
 elif section == "🥎 Pitching":
-    st.header("🥎 Pitching")
-    st.info("Coming soon — 6-man rotation builder, bullpen role assignment, fatigue tracking.")
+    pit.render_pitching(league)
 
 elif section == "📝 Draft":
     st.header("📝 Draft Board")

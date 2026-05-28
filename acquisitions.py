@@ -573,6 +573,83 @@ def min_eff_pitch(row, threshold: int = EFF_PITCH_THRESHOLD) -> float:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TOP-PITCH-QUALITY GATE (rotation eligibility — single source of truth)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Replaces the retired "STM >= 45 AND 3+ effective pitches" SP-capable rule.
+# Two OOTP 27 mature-data studies (May 2026) dismantled the old rule:
+#   • STM has NO floor — it's a smooth innings-volume lever (WAR/IP flat across
+#     35-85, slope +0.00006, R²=0.005; total WAR rises only via innings).
+#   • Effective-pitch COUNT is the wrong variable — at grade>=30 more pitches is
+#     MONOTONICALLY WORSE (3-eff 3.37 WAR → 6-eff 2.69) because fewer-pitch arms
+#     carry better best-pitches (70.7 vs 65.7). The engine rewards concentrated
+#     elite quality over balanced depth; depth buys innings (+0.88 IP/pitch), not
+#     rate (WAR/IP slope ≈ 0). Confirms H3's MIN_eff_t30 negative coefficient on
+#     mature data (resolves the v14.0 line-241 averaging-artifact caution).
+#
+# The real cliff is at the BOTTOM, on top-pitch quality (best-pitch alone
+# explains R²=0.095; count explains 0.002, wrong sign). Pitches at grade>=50:
+#   0 → 1.58 WAR (replacement, best pitch 44.7) | 1 → 2.32 | 2 → 3.02 | 3 → 3.38
+# So the viability floor — not a preference — is one real out-pitch plus one
+# usable secondary. GATE: top_pitch_grade >= 50 AND (# secondaries >= 40) >= 1.
+#
+# PROVISIONAL: 50/40 calibrated on K-T mature data. Re-validate after AC
+# converts to OOTP 27. The Pitching module exposes these as editable overrides
+# in pitching_state; everywhere else uses these constant defaults so a single
+# arm is tagged identically across modules.
+
+PITCH_GATE_DEFAULTS = {
+    'top_min':         50,   # best pitch must reach this grade
+    'secondary_min':   40,   # a "usable secondary" is a pitch at/above this grade
+    'secondary_count':  1,   # how many such secondaries are required
+}
+
+
+def top_pitch_grade(row) -> float:
+    """Highest current pitch grade across the arsenal. 0 if none present."""
+    grades = [_s(row.get(c, 0)) for c in PITCH_GRADE_COLS]
+    return max(grades) if grades else 0.0
+
+
+def secondary_pitch_count(row, secondary_min: int = 40) -> int:
+    """
+    Count of *secondary* pitches at/above secondary_min — i.e. usable pitches
+    other than the single best one. The best pitch is excluded exactly once so a
+    one-pitch arm scores 0 secondaries even if that pitch clears the bar.
+    """
+    grades = sorted((_s(row.get(c, 0)) for c in PITCH_GRADE_COLS), reverse=True)
+    if not grades:
+        return 0
+    # Drop the single top pitch; count the rest that clear secondary_min.
+    return sum(1 for g in grades[1:] if g >= secondary_min)
+
+
+def passes_pitch_gate(row, thresholds: dict | None = None) -> bool:
+    """
+    Rotation-eligibility gate (top-pitch quality). True if the arm has one real
+    out-pitch plus the required number of usable secondaries.
+
+    A HARD gate, but a routing one — callers send failing arms to the bullpen
+    pool (where one pitch is enough), never discard them. That routing is what
+    makes a hard filter consistent with the suite's "never strand an arm" norm.
+    """
+    t = {**PITCH_GATE_DEFAULTS, **(thresholds or {})}
+    if top_pitch_grade(row) < t['top_min']:
+        return False
+    return secondary_pitch_count(row, t['secondary_min']) >= t['secondary_count']
+
+
+def thin_out_pitch(row, thresholds: dict | None = None) -> bool:
+    """
+    Flag (not a gate): arm clears the gate but its best pitch sits in the
+    soft 50-55 band — viable starter, thin out-pitch. Caller decides what to do.
+    """
+    t = {**PITCH_GATE_DEFAULTS, **(thresholds or {})}
+    tpg = top_pitch_grade(row)
+    return passes_pitch_gate(row, t) and t['top_min'] <= tpg < (t['top_min'] + 5)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TRADE VALUE
 # ══════════════════════════════════════════════════════════════════════════════
 

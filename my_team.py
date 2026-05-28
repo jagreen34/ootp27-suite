@@ -34,6 +34,8 @@ from acquisitions import (
     off_f1, def_war, pos_adj,
     trade_value,
     cnt_eff_pitches, min_eff_pitch,
+    top_pitch_grade, secondary_pitch_count,
+    passes_pitch_gate, thin_out_pitch, PITCH_GATE_DEFAULTS,
     babip_luck_flag,
     BUY_LUCK_FLAGS, SELL_LUCK_FLAGS,
     ZR_MODELS, ZR_WAR_FACTOR,
@@ -78,9 +80,14 @@ ZR_PLUS_FLOOR = {
     'SS':  8,
 }
 
-# SP-capable threshold (registry hard rules + gameplay)
-SP_STM_FLOOR    = 45
-SP_PITCHES_MIN  = 3
+# SP-capable threshold — RETIRED.
+# The old rule (STM >= 45 AND 3+ effective pitches) is superseded on both terms:
+# STM has no floor (it's a smooth innings-volume lever) and effective-pitch
+# count is an inverted proxy (more pitches → worse WAR, because fewer-pitch arms
+# have better best-pitches). SP-capability is now the top-pitch-quality gate
+# (best >= 50 + one secondary >= 40), defined once in acquisitions.py so the same
+# arm is tagged identically here, in Pitching, and anywhere else. See
+# acquisitions.PITCH_GATE_DEFAULTS / passes_pitch_gate.
 
 
 def predict_zr(row, pos: str) -> float:
@@ -130,9 +137,17 @@ def positions_playable(row) -> list[dict]:
 
 
 def sp_capable(row) -> bool:
-    """SP-capable: STM ≥ 45 AND 3+ effective pitches (grade ≥ 30)."""
-    return (_s(row.get('STM', 0)) >= SP_STM_FLOOR
-            and cnt_eff_pitches(row) >= SP_PITCHES_MIN)
+    """
+    SP-capable = passes the top-pitch-quality rotation gate (best pitch >= 50 AND
+    one secondary >= 40, on current grades). Uses acquisitions defaults so the
+    tag matches the Pitching module unless that module's gate has been retuned.
+
+    Note what this deliberately does NOT check: STM (no floor — a volume lever,
+    not an eligibility gate) and effective-pitch count (an inverted proxy). Any
+    arm can be stretched to start; this only asks whether the arsenal can turn a
+    lineup over. Stamina shows up as innings volume elsewhere, never as a gate.
+    """
+    return passes_pitch_gate(row)
 
 
 def flex_summary(row) -> str:
@@ -230,16 +245,21 @@ def _build_player_row(row_dict: dict) -> dict:
 
     # Position-specific
     if pos in PITCHER_POSITIONS:
-        cnt_eff = cnt_eff_pitches(row_dict)
-        is_sp_capable = sp_capable(row_dict)
+        cnt_eff = cnt_eff_pitches(row_dict)   # kept as a display column only
+        is_sp_capable = sp_capable(row_dict)  # top-pitch gate (best>=50 + sec>=40)
         if is_sp_capable and pos != 'SP':
             flags.append('SP-CAPABLE')
         if pos == 'SP' and not is_sp_capable:
+            # Listed as a starter but the arsenal fails the rotation gate —
+            # one real out-pitch + a usable secondary. He's a reliever by skill.
             flags.append('SP-MARGINAL')
         if _s(row_dict.get('PIT_CON', 0)) < 40:
             flags.append('LOW-CON')
-        if cnt_eff < 3 and pos == 'SP':
-            flags.append('THIN-ARSENAL')
+        # THIN-ARSENAL is now a quality flag, not a count flag: clears the gate
+        # but the out-pitch sits in the soft 50-55 band. (The old cnt_eff<3 rule
+        # was the inverted-proxy trap — more pitches ≠ better.)
+        if pos == 'SP' and thin_out_pitch(row_dict):
+            flags.append('THIN-OUT-PITCH')
         flex = ''
         luck = ''
     else:
@@ -757,9 +777,14 @@ def _render_roster_tab(active_tbl, reserve_tbl, full_tbl):
             st.info("No pitchers in this view.")
         else:
             st.caption(
-                "**CNT_eff** = pitches at grade ≥30 (usability threshold). "
-                "**SP-CAPABLE** = STM ≥45 and 3+ effective pitches; tagged on RPs who could be stretched out. "
-                "**LOW-CON** = PIT_CON < 40. **THIN-ARSENAL** = listed SP with fewer than 3 effective pitches."
+                "**CNT_eff** = pitches at grade ≥30 (shown for reference; not an "
+                "eligibility signal — count doesn't predict WAR). "
+                "**SP-CAPABLE** = clears the top-pitch gate (best ≥50 + one "
+                "secondary ≥40); tagged on RPs who could be stretched to start. "
+                "**SP-MARGINAL** = listed SP whose arsenal fails that gate. "
+                "**LOW-CON** = PIT_CON < 40. "
+                "**THIN-OUT-PITCH** = clears the gate but best pitch is in the "
+                "soft 50–55 band."
             )
             st.dataframe(
                 pit_tbl[pit_cols],
