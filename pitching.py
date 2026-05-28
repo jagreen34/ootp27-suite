@@ -133,7 +133,7 @@ def build_rotation(pits_df: pd.DataFrame, gate: dict) -> dict:
         rows.append({
             'row':        r,
             'name':       str(r.get('Name', '')),
-            'age':        int(_s(r.get('Age', 0))),
+            'age':        int(_s(r.get('AGE', r.get('Age', 0)))),
             'sp_f1':      round(sp_f1(r), 2),
             'rp_f1':      round(rp_f1(r), 2),
             'stu':        int(_s(r.get('STU', 0))),
@@ -195,7 +195,7 @@ def build_bullpen(pits_df: pd.DataFrame, rotation_names: set, gate: dict,
         candidates.append({
             'row':       r,
             'name':      name,
-            'age':       int(_s(r.get('Age', 0))),
+            'age':       int(_s(r.get('AGE', r.get('Age', 0)))),
             'rp_f1':     round(rp_f1(r), 2),
             'sp_f1':     round(sp_f1(r), 2),
             'stu':       int(_s(r.get('STU', 0))),
@@ -281,7 +281,7 @@ def build_fatigue(pits_df: pd.DataFrame, bands: dict) -> list[dict]:
         out.append({
             'name':  str(r.get('Name', '')),
             'pos':   pos,
-            'age':   int(_s(r.get('Age', 0))),
+            'age':   int(_s(r.get('AGE', r.get('Age', 0)))),
             'spf':   round(spf, 0),
             'rpf':   round(rpf, 0),
             'band':  band,

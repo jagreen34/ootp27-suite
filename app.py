@@ -31,7 +31,7 @@ def get_league():
     return st.session_state.get('active_league', None)
 
 st.title("⚾ OOTP 27 Suite")
-st.caption("v1.0 | v14.2 registry locked | F1.1 SP/RP | Full batter F1 reconstruction")
+st.caption("v1.0 | v14.6 registry locked | F1.1 SP/RP | Full batter F1 reconstruction")
 
 st.sidebar.header("🏟️ League")
 
