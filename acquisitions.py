@@ -650,6 +650,143 @@ def thin_out_pitch(row, thresholds: dict | None = None) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SP PROJECTED WAR + QUALITY TIERS (registry A2 GB model; A15 linear fallback)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# "Good enough?" needs a WAR-scaled number, and sp_f1 is a RANKING score, not WAR
+# (it runs ~−1.2 to −0.3 where real WAR runs 0.09 to 5.63). So tiers are cut on a
+# proper WAR estimate, not on sp_f1.
+#
+# Primary: the v27 GB SP model (gb_sp_season_v27.pkl, CV R²=0.711, registry A2 /
+# study 3C-2). Ratings-only, no IP — IP is excluded deliberately so the projection
+# can't see future innings. Feature order is fixed by sp_features_v27.pkl:
+#   [STU, MOV, PIT_CON, PBABIP, HRA, STM, STU_x_MOV]   (STU_x_MOV computed here)
+#
+# Fallback: the A15 confound regression (SP-only, N=7,255, R²=0.648). Used only if
+# the pkl is missing or the sklearn version can't load it (joblib pickles are
+# version-sensitive — retrain_v27.py regenerates them in-env if so). The fallback
+# keeps the feature WORKING rather than crashing; tiers stay on the same WAR scale.
+#   WAR ≈ −10.8601 + 0.0905·CON + 0.0663·STU + 0.1068·MOV + 0.0180·top_pitch
+
+_SP_GB_MODEL = None
+_SP_GB_FEATURES = None
+_SP_GB_LOAD_TRIED = False
+_SP_GB_STATUS = 'unloaded'   # 'gb' | 'fallback' | 'unloaded'
+
+# A15 SP-only fallback coefficients (intercept + slopes). top_pitch = max grade.
+_A15_SP_FALLBACK = {
+    'intercept': -10.8601,
+    'PIT_CON': 0.0905, 'STU': 0.0663, 'MOV': 0.1068, 'top_pitch': 0.0180,
+}
+
+
+def _load_sp_gb_model():
+    """Load the GB SP model once. Returns (model, features) or (None, None)."""
+    global _SP_GB_MODEL, _SP_GB_FEATURES, _SP_GB_LOAD_TRIED, _SP_GB_STATUS
+    if _SP_GB_LOAD_TRIED:
+        return _SP_GB_MODEL, _SP_GB_FEATURES
+    _SP_GB_LOAD_TRIED = True
+    here = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(here, 'gb_sp_season_v27.pkl')
+    feat_path  = os.path.join(here, 'sp_features_v27.pkl')
+    try:
+        import joblib
+        if os.path.exists(model_path) and os.path.exists(feat_path):
+            _SP_GB_MODEL = joblib.load(model_path)
+            _SP_GB_FEATURES = joblib.load(feat_path)
+            _SP_GB_STATUS = 'gb'
+        else:
+            _SP_GB_STATUS = 'fallback'
+    except Exception:
+        # sklearn version mismatch, missing joblib, corrupt pkl — degrade safely.
+        _SP_GB_MODEL = None
+        _SP_GB_FEATURES = None
+        _SP_GB_STATUS = 'fallback'
+    return _SP_GB_MODEL, _SP_GB_FEATURES
+
+
+def sp_war_status() -> str:
+    """Which estimator is live: 'gb' (model), 'fallback' (A15 linear)."""
+    _load_sp_gb_model()
+    return _SP_GB_STATUS
+
+
+def _sp_war_fallback(row) -> float:
+    """A15 linear WAR estimate (no external model needed)."""
+    c = _A15_SP_FALLBACK
+    return (c['intercept']
+            + c['PIT_CON'] * _s(row.get('PIT_CON', 0))
+            + c['STU']     * _s(row.get('STU', 0))
+            + c['MOV']     * _s(row.get('MOV', 0))
+            + c['top_pitch'] * top_pitch_grade(row))
+
+
+def sp_war_estimate(row) -> float:
+    """
+    Projected season WAR for a starter, on a real WAR scale (for quality tiers).
+    Uses the v27 GB model if available, else the A15 linear fallback.
+    """
+    model, feats = _load_sp_gb_model()
+    if model is None or feats is None:
+        return round(_sp_war_fallback(row), 2)
+    try:
+        stu = _s(row.get('STU', 0))
+        mov = _s(row.get('MOV', 0))
+        feat_vals = {
+            'STU': stu, 'MOV': mov,
+            'PIT_CON': _s(row.get('PIT_CON', 0)),
+            'PBABIP':  _s(row.get('PBABIP', 0)),
+            'HRA':     _s(row.get('HRA', 0)),
+            'STM':     _s(row.get('STM', 0)),
+            'STU_x_MOV': stu * mov,
+        }
+        # Pass a named single-row DataFrame in the model's exact feature order so
+        # sklearn matches on names (the model was fit on a DataFrame).
+        x = pd.DataFrame([[feat_vals.get(f, 0.0) for f in feats]], columns=list(feats))
+        return round(float(model.predict(x)[0]), 2)
+    except Exception:
+        return round(_sp_war_fallback(row), 2)
+
+
+# Quality tier bands, anchored to A14 replacement (1.58) + A15 bins. The
+# "good-enough" line is the bottom of MID (2.0 default). Editable in pitching_state.
+SP_TIER_DEFAULTS = {
+    'front':       3.5,   # >= front  → front-line #1/#2
+    'mid':         2.0,   # >= mid    → mid-rotation #3/#4  (the good-enough bar)
+    'back':        1.0,   # >= back   → back-end #5 / fringe
+}                          # < back    → below replacement (a hole)
+
+SP_TIER_LABELS = {
+    'front': 'Front-line',
+    'mid':   'Mid-rotation',
+    'back':  'Back-end',
+    'hole':  'Below-replacement',
+}
+
+SP_TIER_ICONS = {
+    'front': '🟢', 'mid': '🔵', 'back': '🟡', 'hole': '🔴',
+}
+
+
+def sp_tier(war: float, bands: dict | None = None) -> str:
+    """Map a projected WAR to a tier key (front / mid / back / hole)."""
+    b = {**SP_TIER_DEFAULTS, **(bands or {})}
+    if war >= b['front']:
+        return 'front'
+    if war >= b['mid']:
+        return 'mid'
+    if war >= b['back']:
+        return 'back'
+    return 'hole'
+
+
+def is_good_enough(war: float, bands: dict | None = None) -> bool:
+    """At/above the good-enough bar (bottom of MID, default 2.0 WAR)."""
+    b = {**SP_TIER_DEFAULTS, **(bands or {})}
+    return war >= b['mid']
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TRADE VALUE
 # ══════════════════════════════════════════════════════════════════════════════
 

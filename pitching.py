@@ -47,6 +47,8 @@ from acquisitions import (
     sp_f1, rp_f1,
     top_pitch_grade, secondary_pitch_count,
     passes_pitch_gate, thin_out_pitch, PITCH_GATE_DEFAULTS,
+    sp_war_estimate, sp_tier, is_good_enough, sp_war_status,
+    SP_TIER_DEFAULTS, SP_TIER_LABELS, SP_TIER_ICONS,
     cnt_eff_pitches,
     PITCHER_POSITIONS, BATTER_POSITIONS,
     _s,
@@ -120,22 +122,31 @@ def _personality_skip(row) -> str:
 # ROTATION BUILD
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_rotation(pits_df: pd.DataFrame, gate: dict) -> dict:
+def build_rotation(pits_df: pd.DataFrame, gate: dict,
+                   tier_bands: dict | None = None) -> dict:
     """
     Rank starter-eligible arms by sp_f1, take top-6 = rotation. Arms that clear
     the top-pitch gate but miss the top-6 = stretch/spot-start depth. Arms that
     FAIL the gate are not stranded — they're flagged as bullpen-routed (the
     bullpen build picks them up). Returns dicts, not just the cut.
+
+    Each arm also carries a projected WAR (GB model or A15 fallback) and a
+    quality tier so "good enough?" is answered on a real WAR scale, not sp_f1.
     """
+    tb = {**SP_TIER_DEFAULTS, **(tier_bands or {})}
     rows = []
     for _, r in pits_df.iterrows():
         gated = passes_pitch_gate(r, gate)
+        war = sp_war_estimate(r)
         rows.append({
             'row':        r,
             'name':       str(r.get('Name', '')),
             'age':        int(_s(r.get('AGE', r.get('Age', 0)))),
             'sp_f1':      round(sp_f1(r), 2),
             'rp_f1':      round(rp_f1(r), 2),
+            'proj_war':   war,
+            'tier':       sp_tier(war, tb),
+            'good_enough': is_good_enough(war, tb),
             'stu':        int(_s(r.get('STU', 0))),
             'mov':        int(_s(r.get('MOV', 0))),
             'pit_con':    int(_s(r.get('PIT_CON', 0))),
@@ -302,14 +313,21 @@ def _load_pitching_state(league: League) -> dict:
     return {
         'gate':          {**PITCH_GATE_DEFAULTS, **state.get('gate', {})},
         'fatigue_bands': {**DEFAULT_FATIGUE_BANDS, **state.get('fatigue_bands', {})},
+        'tier_bands':    {**SP_TIER_DEFAULTS, **state.get('tier_bands', {})},
     }
 
 
-def _save_pitching_state(league: League, gate: dict, fatigue_bands: dict):
-    league.save_config({'pitching_state': {
+def _save_pitching_state(league: League, gate: dict, fatigue_bands: dict,
+                         tier_bands: dict | None = None):
+    payload = {
         'gate':          gate,
         'fatigue_bands': fatigue_bands,
-    }})
+    }
+    # Preserve existing tier_bands if not explicitly passed.
+    if tier_bands is None:
+        tier_bands = _load_pitching_state(league)['tier_bands']
+    payload['tier_bands'] = tier_bands
+    league.save_config({'pitching_state': payload})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -404,13 +422,14 @@ def render_pitching(league: League):
     state = _load_pitching_state(league)
     gate  = dict(state['gate'])
     bands = dict(state['fatigue_bands'])
+    tier_bands = dict(state['tier_bands'])
 
     tab_rot, tab_pen, tab_fatigue = st.tabs(
         ["🔄 Rotation", "💪 Bullpen", "🩹 Fatigue"]
     )
 
     with tab_rot:
-        _render_rotation_tab(league, pits, gate)
+        _render_rotation_tab(league, pits, gate, tier_bands)
 
     with tab_pen:
         _render_bullpen_tab(league, pits, gate)
@@ -424,7 +443,7 @@ def render_pitching(league: League):
 
 # ── ROTATION TAB ──────────────────────────────────────────────────────────────
 
-def _render_rotation_tab(league, pits, gate):
+def _render_rotation_tab(league, pits, gate, tier_bands):
     st.subheader("🔄 Rotation (6-Man)")
     st.caption(
         "Top-6 by SP F1. The gate is top-pitch QUALITY (best ≥ "
@@ -432,6 +451,15 @@ def _render_rotation_tab(league, pits, gate):
         f"{gate['secondary_min']}), not stamina or pitch count. STM is shown as "
         "innings VOLUME, never an eligibility filter."
     )
+
+    # WAR-source transparency: GB model vs A15 linear fallback.
+    status = sp_war_status()
+    if status == 'gb':
+        st.caption("📈 Proj WAR from the v27 GB model (gb_sp_season_v27, CV R²=0.711).")
+    else:
+        st.caption("📉 Proj WAR from the A15 linear fallback (R²=0.648) — GB model "
+                   "(`gb_sp_season_v27.pkl`) not loaded or sklearn version mismatch. "
+                   "Run retrain_v27.py on the VPS to regenerate. Tiers still valid.")
 
     with st.expander("⚙️ Rotation gate thresholds (provisional — K-T calibration)"):
         st.caption(
@@ -454,15 +482,50 @@ def _render_rotation_tab(league, pits, gate):
         if cc1.button("Save thresholds", key='pg_save'):
             new_gate = {'top_min': int(top_min), 'secondary_min': int(sec_min),
                         'secondary_count': int(sec_cnt)}
-            bands = _load_pitching_state(league)['fatigue_bands']
-            _save_pitching_state(league, new_gate, bands)
+            st_ = _load_pitching_state(league)
+            _save_pitching_state(league, new_gate, st_['fatigue_bands'], st_['tier_bands'])
             st.success("Saved."); st.rerun()
         if cc2.button("Reset to 50/40/1", key='pg_reset'):
-            bands = _load_pitching_state(league)['fatigue_bands']
-            _save_pitching_state(league, dict(PITCH_GATE_DEFAULTS), bands)
+            st_ = _load_pitching_state(league)
+            _save_pitching_state(league, dict(PITCH_GATE_DEFAULTS),
+                                 st_['fatigue_bands'], st_['tier_bands'])
             st.success("Reset."); st.rerun()
 
-    result = build_rotation(pits, gate)
+    with st.expander("⚙️ Quality-tier WAR bands ('good enough' line)"):
+        st.caption(
+            "Tiers are cut on projected WAR, not SP F1 (which is a ranking score, "
+            "not a WAR scale). 'Good enough' = the MID bar. Anchored to A14 "
+            "replacement (1.58) + A15 bins; editable."
+        )
+        leg = " · ".join(f"{SP_TIER_ICONS[k]} {SP_TIER_LABELS[k]}"
+                         for k in ('front', 'mid', 'back', 'hole'))
+        st.caption(leg)
+        t1, t2, t3 = st.columns(3)
+        with t1:
+            front = st.number_input("🟢 Front-line ≥", value=float(tier_bands['front']),
+                                    min_value=0.0, max_value=12.0, step=0.5, key='tb_front')
+        with t2:
+            mid = st.number_input("🔵 Mid / good-enough ≥", value=float(tier_bands['mid']),
+                                  min_value=0.0, max_value=12.0, step=0.5, key='tb_mid')
+        with t3:
+            back = st.number_input("🟡 Back-end ≥", value=float(tier_bands['back']),
+                                   min_value=0.0, max_value=12.0, step=0.5, key='tb_back')
+        bc1, bc2 = st.columns(2)
+        if bc1.button("Save bands", key='tb_save'):
+            new_tb = {'front': float(front), 'mid': float(mid), 'back': float(back)}
+            st_ = _load_pitching_state(league)
+            _save_pitching_state(league, st_['gate'], st_['fatigue_bands'], new_tb)
+            st.success("Saved."); st.rerun()
+        if bc2.button("Reset bands", key='tb_reset'):
+            st_ = _load_pitching_state(league)
+            _save_pitching_state(league, st_['gate'], st_['fatigue_bands'],
+                                 dict(SP_TIER_DEFAULTS))
+            st.success("Reset."); st.rerun()
+
+    result = build_rotation(pits, gate, tier_bands)
+
+    def _tier_cell(x):
+        return f"{SP_TIER_ICONS[x['tier']]} {SP_TIER_LABELS[x['tier']]}"
 
     if not result['rotation']:
         st.warning(
@@ -473,7 +536,8 @@ def _render_rotation_tab(league, pits, gate):
     else:
         rot_rows = [{
             '#': i + 1, 'Name': x['name'], 'Age': x['age'],
-            'SP F1': x['sp_f1'], 'Top Pitch': x['top_pitch'],
+            'SP F1': x['sp_f1'], 'Proj WAR': x['proj_war'], 'Tier': _tier_cell(x),
+            'Top Pitch': x['top_pitch'],
             'STU': x['stu'], 'MOV': x['mov'], 'PIT_CON': x['pit_con'],
             'STM': x['stm'], 'Proj IP': x['proj_ip'],
             'Flags': ' '.join(f for f in
@@ -481,14 +545,22 @@ def _render_rotation_tab(league, pits, gate):
                               if f),
         } for i, x in enumerate(result['rotation'])]
         st.dataframe(pd.DataFrame(rot_rows), use_container_width=True, hide_index=True)
+
         n = len(result['rotation'])
+        n_good = sum(1 for x in result['rotation'] if x['good_enough'])
+        bar = tier_bands['mid']
+        st.markdown(
+            f"**Rotation verdict: {n_good} of {n} above the good-enough bar "
+            f"(≥ {bar:g} proj WAR), {n - n_good} below.**"
+            + ("" if n_good == n else
+               " The arms below the bar are where to shop for an upgrade.")
+        )
         if n < ROTATION_SIZE:
             st.caption(f"⚠️ Only {n} gate-clearing starters — rotation is short of 6.")
         st.caption(
-            "Ordered by SP F1 (it already weights top-pitch quality, R²=0.095 on "
-            "best-pitch alone). Slots 1–6 are by F1 — reorder to taste; the data "
-            "doesn't support handedness/rest slotting. 37-GS cap is inherent to "
-            "a 6-man rotation."
+            "Ordered by SP F1 (ranking); Tier is cut on Proj WAR (sizing) — a #4 "
+            "by F1 can still be a hole by WAR. Slots 1–6 by F1, reorder to taste. "
+            "37-GS cap is inherent to a 6-man rotation."
         )
 
     if result['depth']:
@@ -497,6 +569,7 @@ def _render_rotation_tab(league, pits, gate):
                    "appear in the bullpen pool (dual-eligibility).")
         depth_rows = [{
             'Name': x['name'], 'Age': x['age'], 'SP F1': x['sp_f1'],
+            'Proj WAR': x['proj_war'], 'Tier': _tier_cell(x),
             'RP F1': x['rp_f1'], 'Top Pitch': x['top_pitch'],
             'STM': x['stm'], 'Proj IP': x['proj_ip'],
             'Flags': ' '.join(f for f in

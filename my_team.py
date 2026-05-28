@@ -36,6 +36,7 @@ from acquisitions import (
     cnt_eff_pitches, min_eff_pitch,
     top_pitch_grade, secondary_pitch_count,
     passes_pitch_gate, thin_out_pitch, PITCH_GATE_DEFAULTS,
+    sp_war_estimate, is_good_enough, SP_TIER_DEFAULTS,
     babip_luck_flag,
     BUY_LUCK_FLAGS, SELL_LUCK_FLAGS,
     ZR_MODELS, ZR_WAR_FACTOR,
@@ -495,6 +496,28 @@ def diagnose_roster_construction(active_df: pd.DataFrame) -> list[dict]:
             'level': 'warn',
             'msg': f"Have {sp_count} starters — registry locked at 6-man rotation.",
         })
+
+    # Rotation QUALITY verdict (the "good enough" line) — deployment-side, deeper
+    # detail lives in the Pitching module. Counts SP-listed active arms above the
+    # good-enough bar (default 2.0 proj WAR) using the GB/A15 WAR estimate.
+    sp_arms = active_df[active_df['POS'] == 'SP']
+    if not sp_arms.empty:
+        bar = SP_TIER_DEFAULTS['mid']
+        wars = [sp_war_estimate(r) for _, r in sp_arms.iterrows()]
+        n_good = sum(1 for w in wars if is_good_enough(w))
+        n_sp = len(wars)
+        if n_good == n_sp:
+            issues.append({
+                'level': 'ok',
+                'msg': f"Rotation quality: all {n_sp} starters above the "
+                       f"good-enough bar (≥ {bar:g} proj WAR) ✓ — see Pitching.",
+            })
+        else:
+            issues.append({
+                'level': 'warn',
+                'msg': f"Rotation quality: {n_good} of {n_sp} above the good-enough "
+                       f"bar (≥ {bar:g} proj WAR), {n_sp - n_good} below — see Pitching.",
+            })
 
     # Personality red flags
     bad_personalities = active_df[
