@@ -502,13 +502,16 @@ def _render_rotation_tab(league, pits, gate, tier_bands):
         st.caption(leg)
         t1, t2, t3 = st.columns(3)
         with t1:
-            front = st.number_input("🟢 Front-line ≥", value=float(tier_bands['front']),
+            front = st.number_input(f"{SP_TIER_ICONS['front']} Front-line ≥",
+                                    value=float(tier_bands['front']),
                                     min_value=0.0, max_value=12.0, step=0.5, key='tb_front')
         with t2:
-            mid = st.number_input("🔵 Mid / good-enough ≥", value=float(tier_bands['mid']),
+            mid = st.number_input(f"{SP_TIER_ICONS['mid']} Mid / good-enough ≥",
+                                  value=float(tier_bands['mid']),
                                   min_value=0.0, max_value=12.0, step=0.5, key='tb_mid')
         with t3:
-            back = st.number_input("🟡 Back-end ≥", value=float(tier_bands['back']),
+            back = st.number_input(f"{SP_TIER_ICONS['back']} Back-end ≥",
+                                   value=float(tier_bands['back']),
                                    min_value=0.0, max_value=12.0, step=0.5, key='tb_back')
         bc1, bc2 = st.columns(2)
         if bc1.button("Save bands", key='tb_save'):
@@ -523,6 +526,15 @@ def _render_rotation_tab(league, pits, gate, tier_bands):
             st.success("Reset."); st.rerun()
 
     result = build_rotation(pits, gate, tier_bands)
+
+    # Always-visible tier legend (shape/fill, not color — colorblind-safe).
+    tb = {**SP_TIER_DEFAULTS, **tier_bands}
+    st.caption(
+        f"**Tier guide:** {SP_TIER_ICONS['front']} Front-line (≥{tb['front']:g}) · "
+        f"{SP_TIER_ICONS['mid']} Mid-rotation (≥{tb['mid']:g}) · "
+        f"{SP_TIER_ICONS['back']} Back-end (≥{tb['back']:g}) · "
+        f"{SP_TIER_ICONS['hole']} Below-replacement (<{tb['back']:g}) — proj WAR"
+    )
 
     def _tier_cell(x):
         return f"{SP_TIER_ICONS[x['tier']]} {SP_TIER_LABELS[x['tier']]}"

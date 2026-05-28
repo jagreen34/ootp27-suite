@@ -764,7 +764,7 @@ SP_TIER_LABELS = {
 }
 
 SP_TIER_ICONS = {
-    'front': '🟢', 'mid': '🔵', 'back': '🟡', 'hole': '🔴',
+    'front': '⬤⬤', 'mid': '⬤', 'back': '◐', 'hole': '○',
 }
 
 
