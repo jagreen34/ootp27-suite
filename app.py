@@ -9,6 +9,7 @@ import acquisitions as acq
 import my_team as mt
 import lineups as ln
 import pitching as pit
+import draft as drf
 
 st.set_page_config(
     page_title="OOTP 27 Suite",
@@ -96,8 +97,7 @@ elif section == "🥎 Pitching":
     pit.render_pitching(league)
 
 elif section == "📝 Draft":
-    st.header("📝 Draft Board")
-    st.info("Coming soon — OOTP 27 draft board with v14.2 F2 live-draft formula, pitch grade display, arsenal flags.")
+    drf.render_draft(league)
 
 elif section == "🌱 Development":
     st.header("🌱 Development")

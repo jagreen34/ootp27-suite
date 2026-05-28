@@ -801,6 +801,506 @@ def trade_value(f1: float, control_window: float, pos: str) -> float:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# F2 LIVE-DRAFT — PROSPECT MATURE-WAR PROJECTION (single source of truth)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Projects a PRE-DRAFT prospect's mature WAR (mean WAR ages 23-27) from draft-day-
+# observable features. Consumed by the Draft module.
+#
+# LINEAGE — PER-REALIZATION (locked May 2026 after three-way cross-validation).
+#   Coefficients below were fit on the real K-T data (draft_pool_full +
+#   player_cross_section_full, seeds K-T, 1976-1990), each (ID, seed) realization
+#   as one observation, GroupKFold(5) by ID. This is the deployment-correct unit:
+#   the K-T seeds do NOT preserve player identity (the same ID is a different
+#   generated player across seeds), so a per-prospect average is a synthetic blend
+#   that exists in no save — and a live draft scores ONE real realization.
+#   The per-realization choice was confirmed independently by two external LLMs
+#   (ChatGPT, Gemini) plus the registry's own v14.0 correction; it supersedes the
+#   per-prospect v12 line (0.151/0.216). See con_delivery / draft methodology.
+#
+#   CV R² (per-realization, K-T): pitcher 0.376, batter 0.325. OOF residual SD:
+#   pitcher ±1.29 WAR, batter ±1.64 WAR — high by nature (single-realization
+#   mature WAR is ~30% engine RNG). Hence the board shows TIERS, not point WAR.
+#
+# ⚠️ INTERIM (K-T regime). These are calibrated to K-T rating distributions, NOT
+#    post-conversion American Circuit. Re-fit on a real AC draft pool at migration
+#    (~July 2026) — rating distributions drift across the version conversion.
+#    Swapping coefficients is a localized change: replace the two COEF dicts +
+#    intercepts (regenerate via fit_f2_deploy.py). f2_is_placeholder() now False.
+#
+# STRUCTURE (reproduces the registry H1/H3 findings on the real data):
+#   Pitcher: F1-full (STU,MOV,PIT_CON,PBABIP,HRA,STM,AGE,velo_mid) + draft context
+#     (RISK/COMP/HSC_MULT/SLOT_ORD) + pitch grades (FB/CH/SI/SL VAL+HAS, PIT_COUNT)
+#     + HSC×amateur. Pitch grades carry signal beyond aggregate STU/MOV; the HAS
+#     indicator is negative while the grade (VAL) is positive — "a bad version of
+#     the pitch hurts; a good one is gold." AGE strongly negative.
+#   Batter: F1-full (CON,GAP,POW,EYE,SPE,AGE,interactions) + position dummies +
+#     personality (6 ords) + draft context + HSC×amateur (9). AGE strongly
+#     negative; CON/POW/GAP/SPE + amateur production + premium positions lead.
+#   Current ratings only (potentials are themselves drifting projections).
+
+_F2_PLACEHOLDER = False   # real per-realization K-T coefficients are wired in
+
+
+def f2_is_placeholder() -> bool:
+    """True only while the F2 scorer runs on non-production placeholder weights."""
+    return _F2_PLACEHOLDER
+
+
+# Per-realization CV R² (K-T) — the honest reliability the methodology reports.
+F2_BATTER_R2  = 0.325
+F2_PITCHER_R2 = 0.376
+# OOF residual SD (per-realization, K-T) — the honest point-estimate error band.
+F2_BATTER_SD  = 1.64
+F2_PITCHER_SD = 1.29
+
+# Amateur stats entering the HSC×amateur block (interactions built as HSC_MULT*AM).
+_F2_BAT_AM = ['AM_PA','AM_AVG','AM_OBP','AM_SLG','AM_ISO','AM_wOBA','AM_wRAA','AM_BB_PCT','AM_K_PCT']
+_F2_PIT_AM = ['AM_IP','AM_BF','AM_PIT_HR','AM_PIT_ERA']
+_F2_PITCH_GRADES = ['PIT_FB_GR','PIT_CH','PIT_SI','PIT_SL']
+_F2_BAT_POS = ['SS','CF','C','2B','3B','RF','LF','1B']
+
+# ── DEPLOYED COEFFICIENTS (raw; apply directly to the built feature vector) ─────
+# Fit by fit_f2_deploy.py on K-T, per-realization, Ridge. Verified to reproduce
+# the standardized-pipeline predictions exactly. Regenerate to re-lock.
+_F2_PITCHER_INTERCEPT = -4.555956
+_F2_PITCHER_COEF = {
+    'STU': 0.032768,
+    'MOV': 0.029443,
+    'PIT_CON': 0.059831,
+    'PBABIP': 0.007992,
+    'HRA': 0.021908,
+    'STM': 0.017101,
+    'AGE': -0.187946,
+    'velo_mid': 0.027167,
+    'RISK_ORD': -0.057635,
+    'COMP_ORD': 0.02074,
+    'HSC_MULT': -0.702437,
+    'SLOT_ORD': -0.029452,
+    'PIT_FB_GR_VAL': 0.011904,
+    'PIT_CH_VAL': 0.022637,
+    'PIT_SI_VAL': 0.018223,
+    'PIT_SL_VAL': 0.007114,
+    'PIT_FB_GR_HAS': -0.445721,
+    'PIT_CH_HAS': -1.044321,
+    'PIT_SI_HAS': -0.724947,
+    'PIT_SL_HAS': -0.356659,
+    'PIT_COUNT': 0.300486,
+    'HSC_AM_IP': 0.021557,
+    'HSC_AM_BF': -0.002095,
+    'HSC_AM_PIT_HR': -0.0728,
+    'HSC_AM_PIT_ERA': -0.169831,
+}
+
+_F2_BATTER_INTERCEPT = -2.214789
+_F2_BATTER_COEF = {
+    'CON': 0.045214,
+    'GAP': 0.02067,
+    'POW': 0.034332,
+    'EYE': 0.002291,
+    'SPE': 0.024016,
+    'AGE': -0.162961,
+    'POW_EYE': 0.000129,
+    'CON_GAP': 0.000319,
+    'POS_SS': 0.574603,
+    'POS_CF': 0.044659,
+    'POS_C': 0.331784,
+    'POS_2B': -0.498101,
+    'POS_3B': -0.171521,
+    'POS_RF': -0.304599,
+    'POS_LF': -0.810633,
+    'POS_1B': -0.634147,
+    'WE_ORD': 0.120194,
+    'IQ_ORD': 0.035035,
+    'AD_ORD': -0.027705,
+    'LEA_ORD': -0.035652,
+    'LOY_ORD': 0.008556,
+    'FIN_ORD': -0.022726,
+    'RISK_ORD': -0.089342,
+    'COMP_ORD': 0.057525,
+    'HSC_MULT': -1.499155,
+    'HSC_AM_PA': 0.00055,
+    'HSC_AM_AVG': 5.520687,
+    'HSC_AM_OBP': -1.800224,
+    'HSC_AM_SLG': 1.936096,
+    'HSC_AM_ISO': 1.8414,
+    'HSC_AM_wOBA': 0.99419,
+    'HSC_AM_wRAA': 0.029436,
+    'HSC_AM_BB_PCT': 0.005356,
+    'HSC_AM_K_PCT': -0.017141,
+}
+
+
+def _f2_feature_vector(row) -> dict:
+    """
+    Build the EXACT feature dict the fit used, from a prepped draft-pool row.
+    Identical construction to fit_f2_deploy.py — this is the contract that keeps
+    deployed coefficients hitting the right inputs (no silent-zero). prep_draft_pool
+    + the column audit guarantee the source columns exist upstream.
+    """
+    f = {}
+    # F1-full ratings (raw 20-80), shared + cohort
+    for c in ('STU','MOV','PIT_CON','PBABIP','HRA','STM','velo_mid',
+              'CON','GAP','POW','EYE','SPE','RISK_ORD','COMP_ORD','HSC_MULT','SLOT_ORD',
+              'WE_ORD','IQ_ORD','AD_ORD','LEA_ORD','LOY_ORD','FIN_ORD','PIT_COUNT'):
+        f[c] = _s(row.get(c, 0))
+    f['AGE'] = _s(row.get('AGE', row.get('Age', 0)))
+    # pitch grades: VAL = grade, HAS = throws-it (grade > 0)
+    for c in _F2_PITCH_GRADES:
+        g = _s(row.get(c, 0))
+        f[f'{c}_VAL'] = g
+        f[f'{c}_HAS'] = 1.0 if g > 0 else 0.0
+    # batter interactions
+    f['POW_EYE'] = f['POW'] * f['EYE']
+    f['CON_GAP'] = f['CON'] * f['GAP']
+    # position dummies
+    pos = str(row.get('POS', '')).strip()
+    for p in _F2_BAT_POS:
+        f[f'POS_{p}'] = 1.0 if pos == p else 0.0
+    # HSC × amateur interactions
+    hsc = _s(row.get('HSC_MULT', 0))
+    for c in _F2_BAT_AM + _F2_PIT_AM:
+        f[f'HSC_{c}'] = hsc * _s(row.get(c, 0))
+    return f
+
+
+def _f2_score(row, coef: dict, intercept: float) -> float:
+    """Dot the built feature vector with raw coefficients. Clamp to a sane range."""
+    f = _f2_feature_vector(row)
+    s = intercept + sum(w * f.get(k, 0.0) for k, w in coef.items())
+    return round(max(0.0, min(9.0, s)), 2)
+
+
+def f2_batter_war(row) -> float:
+    """Batter F2 live-draft projected mature WAR (per-realization K-T coefficients)."""
+    return _f2_score(row, _F2_BATTER_COEF, _F2_BATTER_INTERCEPT)
+
+
+def f2_pitcher_war(row) -> float:
+    """Pitcher F2 live-draft projected mature WAR (per-realization K-T coefficients)."""
+    return _f2_score(row, _F2_PITCHER_COEF, _F2_PITCHER_INTERCEPT)
+
+
+def f2_war(row) -> float:
+    """Route a prospect to the batter or pitcher F2 scorer by listed POS."""
+    pos = str(row.get('POS', '')).strip()
+    if pos in PITCHER_POSITIONS:
+        return f2_pitcher_war(row)
+    return f2_batter_war(row)
+
+
+# ── Draftee trade value ───────────────────────────────────────────────────────
+# A drafted prospect is team-controlled from debut: ML_YRS=0, ML_DAYS=0 →
+# control window = the full 6 service years. That maximum early-control window is
+# exactly what makes a good draftee trade-valuable (the BPA "convert later" relief
+# valve). Projected TV uses the F2 mature-WAR projection AS the F1 input — the
+# projection IS the mature-quality estimate a future trade would price on.
+DRAFTEE_CONTROL_WINDOW = 6.0
+
+
+def f2_trade_value(projected_war: float, pos: str) -> float:
+    """Projected trade value at maturity for a draftee (full 6-yr control)."""
+    return trade_value(projected_war, DRAFTEE_CONTROL_WINDOW, pos)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DRAFT-POOL PREP + COLUMN CONTRACT  (fail-loud, never silent-zero)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# ⚠️ The draft-pool export schema is UNVERIFIED. Every prior module's column map
+#    (registry A1) was confirmed against the MATURE roster/cross-section export,
+#    NOT against a real OOTP 27 draft-pool export — no one has inspected one yet.
+#    The F2 feature columns may be named differently, need specific export tabs
+#    selected, or be absent. So this layer does NOT trust the rename map: it maps
+#    actual→expected and FAILS LOUDLY on any missing LOAD-BEARING column rather
+#    than letting prep_data's .fillna(0) feed a silent zero into the formula (a
+#    zero in PIT_SI_VAL — the top pitcher coefficient — produces a confident
+#    WRONG board). First task on a real draft CSV: run audit_draft_columns() and
+#    reconcile. The bundled fixture is a TEST export, not the schema of record.
+#
+# LOAD-BEARING = consumed by the F2 scorer; a miss degrades/blocks the score.
+# DISPLAY-ONLY = shown on the card; a miss just blanks a field.
+# Under the v12 lineage the HSC×amateur (AM_*) block is IN the formula, so the
+# amateur stats are LOAD-BEARING here (they would be display-only under v14.2).
+
+# Amateur-stat renames specific to the draft pool. In a pure draft export these
+# are the ONLY stats present (every row is ORG="-"), so they are the amateur
+# stats by definition — prefix AM_ for unambiguous contract matching.
+DRAFT_AMATEUR_RENAMES = {
+    'PA': 'AM_PA', 'AB': 'AM_AB', 'AVG': 'AM_AVG', 'OBP': 'AM_OBP',
+    'SLG': 'AM_SLG', 'ISO': 'AM_ISO', 'wOBA': 'AM_wOBA', 'wRAA': 'AM_wRAA',
+    'BB%': 'AM_BB_PCT', 'K%': 'AM_K_PCT', 'HR': 'AM_HR', 'WAR': 'AM_BAT_WAR',
+    'IP': 'AM_IP', 'ERA': 'AM_ERA', 'FIP': 'AM_FIP', 'BF': 'AM_BF',
+    'HR_1': 'AM_PIT_HR', 'WAR_1': 'AM_PIT_WAR',
+}
+
+# Categorical → ordinal composite encodings (registry parser-extension spec).
+_COMP_ORD = {'Poor': -2, 'Fair': -1, 'Average': 0, 'Good': 1, 'Great': 2}
+_HSC_ORD  = {'HS Senior': 0, 'JuCo Freshman': 1, 'JuCo Sophomore': 2,
+             'CO Junior': 3, 'CO Senior': 4}
+_HSC_MULT = {'HS Senior': 0.65, 'JuCo Freshman': 0.75, 'JuCo Sophomore': 0.85,
+             'CO Junior': 0.95, 'CO Senior': 1.00}
+_SLOT_ORD = {'3/4': 0, 'Sidearm': 1, 'SIDE': 1, 'Submarine': -2, 'SUB': -2,
+             'Over the Top': -1, 'OTT': -1}
+_RISK_ORD = {'Safe': -2, 'Low': -1, 'Average': 0, 'Medium': 0,
+             'High': 1, 'Very High': 2, 'Extreme': 2}
+_PRONE_ORD = {'Durable': 1, 'Normal': 0, 'Fragile': -1}
+_HNL_ORD   = {'H': 1, 'N': 0, 'L': -1}
+
+# The contract. (expected_col, [acceptable raw source names], load_bearing)
+# The scorer reads expected_col; the audit checks a source is present/mappable.
+DRAFT_F2_CONTRACT = [
+    # identity / routing
+    ('POS',     ['POS'],          True),
+    ('AGE',     ['Age', 'AGE'],   True),
+    ('Name',    ['Name'],         False),
+    ('ORG',     ['ORG'],          True),
+    # batter ratings (load-bearing for batter scorer)
+    ('CON',     ['CON'],          True),
+    ('GAP',     ['GAP'],          True),
+    ('POW',     ['POW'],          True),
+    ('EYE',     ['EYE'],          True),
+    ('SPE',     ['SPE'],          True),
+    # pitcher ratings
+    ('STU',     ['STU'],          True),
+    ('MOV',     ['MOV'],          True),
+    ('PIT_CON', ['CON_1', 'PIT_CON'], True),
+    ('HRA',     ['HRA'],          True),
+    ('STM',     ['STM'],          True),
+    ('velo_mid', ['VELO', 'velo_mid'], True),
+    # pitch grades (the dominant pitcher signal — most exposed to schema drift)
+    ('PIT_SI',    ['SI', 'PIT_SI'],       True),
+    ('PIT_CH',    ['CH', 'PIT_CH'],       True),
+    ('PIT_SL',    ['SL', 'PIT_SL'],       True),
+    ('PIT_FB_GR', ['FB', 'PIT_FB_GR'],    True),
+    # draft-context composites (raw categorical → ordinal; derivation unverified)
+    ('RISK_ORD',  ['Risk', 'RISK_ORD'],   True),
+    ('COMP_ORD',  ['COMP', 'COMP_ORD'],   True),
+    ('HSC_MULT',  ['HSC', 'HSC_MULT'],    True),
+    ('SLOT_ORD',  ['Slot', 'SLOT_ORD'],   True),   # pitcher slot context
+    # amateur block (LOAD-BEARING under v12 lineage)
+    ('HSC_AM_wRAA', ['wRAA', 'AM_wRAA'],  True),
+    ('HSC_AM_ISO',  ['ISO', 'AM_ISO'],    True),
+    # flags / display
+    ('PRONE',   ['Prone', 'PRONE'],       False),
+    ('PIT_TYPE', ['Type', 'PIT_TYPE'],    False),
+]
+
+
+def audit_draft_columns(raw_cols) -> dict:
+    """
+    Map actual export columns → expected F2 columns. Returns a structured report:
+      {'ok': bool, 'present': [...], 'missing_load_bearing': [...],
+       'missing_display': [...], 'source_used': {expected: actual}}
+    'ok' is False iff any LOAD-BEARING expected column has no source. This is the
+    audit to run FIRST on a real draft CSV (the registry A1 analogue for the
+    draft-pool export). Fails loud — the Draft module blocks scoring when not ok.
+    """
+    cols = set(map(str, raw_cols))
+    present, missing_lb, missing_disp, used = [], [], [], {}
+    for expected, sources, load_bearing in DRAFT_F2_CONTRACT:
+        hit = next((s for s in sources if s in cols), None)
+        if hit is not None:
+            present.append(expected)
+            used[expected] = hit
+        elif load_bearing:
+            missing_lb.append(expected)
+        else:
+            missing_disp.append(expected)
+    return {
+        'ok': len(missing_lb) == 0,
+        'present': present,
+        'missing_load_bearing': missing_lb,
+        'missing_display': missing_disp,
+        'source_used': used,
+    }
+
+
+def _ord_map(series, table, default=0.0):
+    return series.astype(str).str.strip().map(table).fillna(default)
+
+
+def prep_draft_pool(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prep a DRAFT-POOL export for F2 scoring. Mirrors prep_data's rename+coerce,
+    then adds the draft-specific amateur renames and ordinal composites the F2
+    formula needs. Does NOT silently zero load-bearing columns — callers must
+    gate on audit_draft_columns() first (the Draft module does).
+
+    NOTE: prep_data already renames pitch grades (FB→PIT_FB_GR, SI→PIT_SI, ...)
+    and PIT_CON (CON_1). We run it first, then layer draft-only transforms.
+    """
+    df = df.copy()
+
+    # Amateur-stat renames BEFORE prep_data, so collisions resolve to AM_* and
+    # don't get swallowed by the mature-export rename map.
+    df = df.rename(columns={k: v for k, v in DRAFT_AMATEUR_RENAMES.items()
+                            if k in df.columns and v not in df.columns})
+
+    # Standard rename + velo parse + numeric coercion (shared pipeline).
+    df = prep_data(df)
+
+    # Velocity: prep_data parses VELO → velo_mid; draft export may carry VT too.
+    if 'velo_mid' not in df.columns or (df.get('velo_mid', pd.Series(dtype=float)).fillna(0) == 0).all():
+        if 'VT' in df.columns:
+            df['velo_mid'] = df['VT'].apply(_parse_velo)
+
+    # Ordinal composites from raw categoricals (registry encodings).
+    if 'COMP' in df.columns:
+        df['COMP_ORD'] = _ord_map(df['COMP'], _COMP_ORD)
+    if 'HSC' in df.columns:
+        df['HSC_ORD']  = _ord_map(df['HSC'], _HSC_ORD)
+        df['HSC_MULT'] = _ord_map(df['HSC'], _HSC_MULT, default=0.65)
+    if 'DEV_RISK' in df.columns:           # prep_data renames Risk → DEV_RISK
+        df['RISK_ORD'] = _ord_map(df['DEV_RISK'], _RISK_ORD)
+    elif 'Risk' in df.columns:
+        df['RISK_ORD'] = _ord_map(df['Risk'], _RISK_ORD)
+    if 'Slot' in df.columns:
+        df['SLOT_ORD'] = _ord_map(df['Slot'], _SLOT_ORD)
+    if 'PRONE' in df.columns:
+        df['PRONE_ORD'] = _ord_map(df['PRONE'], _PRONE_ORD)
+
+    # Personality H/N/L → ordinals (batter block).
+    for raw, ordcol in (('WE', 'WE_ORD'), ('INT', 'INT_ORD'), ('AD', 'AD_ORD'),
+                        ('LEA', 'LEA_ORD'), ('LOY', 'LOY_ORD'), ('FIN', 'FIN_ORD')):
+        if raw in df.columns:
+            df[ordcol] = _ord_map(df[raw], _HNL_ORD)
+
+    return df
+
+
+def draftee_skip_reason(row) -> str:
+    """A6 hard rule: Unmotivated / Disruptive prospects auto-skip, never override."""
+    p = str(row.get('PIT_TYPE', row.get('Type', ''))).strip()
+    return p if p in ('Unmotivated', 'Disruptive') else ''
+
+
+def draftee_fragile(row) -> bool:
+    """A6: Fragile → −40% projected value (applied by the Draft module)."""
+    prone = str(row.get('PRONE', '')).strip()
+    return prone == 'Fragile'
+
+
+# ── CON-delivery / BIG-CON-bet (A6 rules-of-thumb; swappable for a fitted curve)
+#
+# The queued CON-delivery-by-age study (con_delivery_study_prompt.md) will replace
+# these thin-sample rules of thumb with a calibrated curve. Keep that swap LOCAL:
+# con_delivery_rate() is the single hook — drop in the fitted function and the
+# flags below inherit it. This is a DRAFT-TIME delivery concern only; mature CON
+# is a settled continuous lever with NO gate (registry A15) — do not conflate.
+CON_BUST_PROMISED_GROWTH = 30   # A6: 30+ promised CON growth → BIG-CON-bet
+CON_OLDER_DRAFTEE_AGE    = 21   # A6: age 21+ → ~22% delivery (vs ~57% at 17)
+
+
+def con_delivery_rate(age: float, promised_growth: float) -> float:
+    """
+    PLACEHOLDER delivery rate (fraction of promised CON growth expected to land),
+    from the A6 thin-sample rules of thumb (57% at 17 → 22% at 21+). Swap this
+    one function for the fitted curve when the CON-delivery study runs; callers
+    don't change. Returns a fraction in [0, 1].
+    """
+    a = _s(age, 19)
+    if a >= CON_OLDER_DRAFTEE_AGE:
+        return 0.22
+    # Linear interpolation 57% (age 17) → 22% (age 21), clamped.
+    return float(min(0.57, max(0.22, 0.57 - (a - 17) * (0.35 / 4.0))))
+
+
+def pitcher_promised_con_growth(row) -> float:
+    """Promised PIT_CON growth = potential − current. 0 if potential absent."""
+    cur = _s(row.get('PIT_CON', 0))
+    pot = _s(row.get('PIT_CON_P', 0))
+    return max(0.0, pot - cur)
+
+
+def big_con_bet_flag(row) -> str:
+    """
+    A6: pitchers with 30+ promised CON growth are high bust risk ('BIG-CON-bet'),
+    sharpened by age (older draftees deliver far less). Returns '' or the flag.
+    """
+    if str(row.get('POS', '')).strip() not in PITCHER_POSITIONS:
+        return ''
+    growth = pitcher_promised_con_growth(row)
+    if growth >= CON_BUST_PROMISED_GROWTH:
+        return 'BIG-CON-bet'
+    return ''
+
+
+# ── Predraft SP-capability (RP-ceiling detection for the round-4 rule) ─────────
+#
+# "Never draft RP before Round 4" (A6) needs to know which prospects are
+# RP-CEILING — but role is unknowable at draft day (the deprecated SP-dominant
+# classification problem). The clean operationalization: an arm that fails the
+# top-pitch SP-capability gate has a reliever ceiling. We tie the rule to A14
+# (top-pitch quality), not to an unknowable future role tag.
+#
+# ⚠️ The mature 50/40 gate thresholds DO NOT transfer to the predraft regime —
+# predraft and MLB ratings live on different distributions of the same 20-80
+# scale (STM=45 is MLB median but predraft 90th pct). These predraft thresholds
+# are a SEPARATE, UN-STUDIED question (registry); editable in draft_state, marked
+# provisional. Do not carry the mature gate onto prospects unthought.
+PREDRAFT_PITCH_GATE_DEFAULTS = {
+    'top_min':        45,   # predraft-rescaled (vs mature 50) — PROVISIONAL
+    'secondary_min':  35,   # predraft-rescaled (vs mature 40) — PROVISIONAL
+    'secondary_count': 1,
+}
+
+
+def predraft_sp_capable(row, thresholds: dict | None = None) -> bool:
+    """Top-pitch gate on PREDRAFT-rescaled thresholds. False ⇒ reliever ceiling."""
+    t = {**PREDRAFT_PITCH_GATE_DEFAULTS, **(thresholds or {})}
+    return passes_pitch_gate(row, t)
+
+
+# ── Draft prospect tiers ──────────────────────────────────────────────────────
+# Prospects project FAR lower mature WAR than established players, so the rotation
+# SP_TIER bands (front 3.5 / mid 2.0) would dump almost everyone in "hole." These
+# are draft-scaled and editable in draft_state. Colorblind-safe glyphs reused.
+DRAFT_TIER_DEFAULTS = {
+    'elite':   2.5,   # ⬤⬤  blue-chip / top-of-board
+    'solid':   1.5,   # ⬤   regular-ceiling prospect
+    'flier':   0.5,   # ◐   developmental flier
+}                      # < flier → ○ org-filler / non-prospect
+DRAFT_TIER_LABELS = {
+    'elite': 'Blue-chip', 'solid': 'Regular-ceiling',
+    'flier': 'Developmental flier', 'filler': 'Org-filler',
+}
+DRAFT_TIER_ICONS = {
+    'elite': '⬤⬤', 'solid': '⬤', 'flier': '◐', 'filler': '○',
+}
+
+
+def draft_tier(war: float, bands: dict | None = None) -> str:
+    b = {**DRAFT_TIER_DEFAULTS, **(bands or {})}
+    if war >= b['elite']: return 'elite'
+    if war >= b['solid']: return 'solid'
+    if war >= b['flier']: return 'flier'
+    return 'filler'
+
+
+# AC version cycle ≈ 4-5 sim seasons (~1 real-year per migration). Window WAR
+# discounts career mature WAR to what's capturable before the next migration: a
+# 17-yo who matures at 23 captures little in-window; a 22-yo college arm captures
+# most. This is INFORMATIONAL (a side column) — it never reorders the BPA rank.
+WINDOW_SEASONS    = 4.5   # capturable sim-seasons per AC version
+MATURE_PEAK_AGE   = 25    # registry: K-T batter peak ~25; pitchers plateau 25-35
+
+
+def window_war(career_war: float, age: float, window_seasons: float = WINDOW_SEASONS) -> float:
+    """
+    Career mature WAR discounted to what's capturable within the AC play window.
+    Crude on purpose (no per-season aging curve baked in): fraction of the window
+    that overlaps the prospect's productive years, assuming ~(MATURE_PEAK_AGE-age)
+    development lag before mature production begins. Informational only.
+    """
+    a = _s(age, 19)
+    dev_lag = max(0.0, MATURE_PEAK_AGE - a)           # sim-years until mature
+    capturable = max(0.0, window_seasons - dev_lag)   # productive years in-window
+    frac = min(1.0, capturable / window_seasons) if window_seasons > 0 else 0.0
+    return round(career_war * frac, 2)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # BABIP LUCK FLAG
 # ══════════════════════════════════════════════════════════════════════════════
 
