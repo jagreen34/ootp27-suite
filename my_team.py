@@ -360,6 +360,13 @@ def detect_needs_and_surplus(roster_df: pd.DataFrame, mode: str) -> tuple[list[s
         if best_f1 < need_floor:
             needs.append(pos)
 
+        # Surplus only applies to position players. On a 25-man you need exactly
+        # 6 SP + 5 RP; "extra" pitchers aren't surplus, they're just the best
+        # available pitching depth. Surplus is about positions where you have
+        # too many quality bodies to play them all.
+        if pos in ('SP', 'RP'):
+            continue
+
         if quality_count >= SURPLUS_MIN_COUNT and best_f1 >= SURPLUS_BEST_FLOOR:
             surplus.append(pos)
 
@@ -373,15 +380,19 @@ def detect_needs_and_surplus(roster_df: pd.DataFrame, mode: str) -> tuple[list[s
 def f1_by_position(roster_df: pd.DataFrame) -> pd.DataFrame:
     """
     Aggregate F1 by listed position. Returns one row per position with
-    count, best F1, avg F1, total F1, avg age.
+    count, best F1, avg F1, total F1, avg age. CL is folded into RP since
+    closer is an RP role, not a separate position.
     """
     if roster_df.empty:
         return pd.DataFrame()
 
-    all_positions = sorted(BATTER_POSITIONS) + ['SP', 'RP', 'CL']
+    all_positions = sorted(BATTER_POSITIONS) + ['SP', 'RP']  # CL folds into RP
     rows = []
     for pos in all_positions:
-        at_pos = roster_df[roster_df['POS'] == pos]
+        if pos == 'RP':
+            at_pos = roster_df[roster_df['POS'].isin(['RP', 'CL'])]
+        else:
+            at_pos = roster_df[roster_df['POS'] == pos]
         if at_pos.empty:
             rows.append({
                 'POS':    pos,
@@ -592,23 +603,30 @@ def render_my_team(league: League):
     headroom     = tax_thresh - payroll_curr if tax_thresh > 0 else 0
     over_tax     = payroll_curr > tax_thresh and tax_thresh > 0
 
-    h1, h2, h3, h4, h5 = st.columns(5)
+    # Only show payroll column if Team Config has a value set — otherwise use a 4-col layout
+    show_payroll = payroll_curr > 0 or tax_thresh > 0
+    if show_payroll:
+        h1, h2, h3, h4, h5 = st.columns(5)
+    else:
+        h1, h2, h3, h4 = st.columns(4)
+
     h1.metric("Team",     my_team)
     h2.metric("Mode",     mode)
     h3.metric("Active",   len(active_tbl))
     h4.metric("Reserve",  len(reserve_tbl))
-    if tax_thresh > 0:
-        h5.metric(
-            "Payroll",
-            f"${int(payroll_curr):,}",
-            delta=(
-                f"${int(headroom):,} under" if not over_tax
-                else f"${int(-headroom):,} OVER"
-            ),
-            delta_color=('normal' if not over_tax else 'inverse'),
-        )
-    else:
-        h5.metric("Payroll", f"${int(payroll_curr):,}")
+    if show_payroll:
+        if tax_thresh > 0:
+            h5.metric(
+                "Payroll",
+                f"${int(payroll_curr):,}",
+                delta=(
+                    f"${int(headroom):,} under" if not over_tax
+                    else f"${int(-headroom):,} OVER"
+                ),
+                delta_color=('normal' if not over_tax else 'inverse'),
+            )
+        else:
+            h5.metric("Payroll", f"${int(payroll_curr):,}")
 
     # Top-level construction warnings — surface here, don't bury
     construction = diagnose_roster_construction(active_tbl) if not active_tbl.empty else []
@@ -851,7 +869,7 @@ def _render_autoconfig_tab(full_tbl, tc, mode, league):
     st.markdown("---")
     st.markdown("**Edit before applying**")
 
-    all_positions = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'SP', 'RP', 'CL']
+    all_positions = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'SP', 'RP']
 
     edited_needs = st.multiselect(
         "Needs (will be saved to Team Config)",
