@@ -268,6 +268,41 @@ def optimize_lineup(bats_df: pd.DataFrame, zr_floors: dict,
     }
 
 
+def diagnose_unfilled(pos: str, bats_df: pd.DataFrame, zr_floors: dict,
+                      locks: dict) -> str:
+    """
+    Explain WHY a field slot couldn't be filled, naming the cause:
+      - no bat clears the floor, or
+      - the only eligible bat(s) are locked to other slots.
+    Returns a one-line, actionable message.
+    """
+    recs = bats_df.to_dict('records')
+    floor = zr_floors.get(pos, DEFAULT_ZR_FLOORS.get(pos, -99.0))
+
+    eligible = [str(r.get('Name', '')) for r in recs if is_eligible(r, pos, zr_floors)]
+    # who is locked to OTHER positions
+    locked_elsewhere = {name: p for p, name in (locks or {}).items() if p != pos}
+    eligible_but_locked = [(n, locked_elsewhere[n]) for n in eligible if n in locked_elsewhere]
+    eligible_free = [n for n in eligible if n not in locked_elsewhere]
+
+    if not eligible:
+        return (f"**{pos}**: no bat clears the +{floor:g} ZR floor. "
+                f"Lower the {pos} floor in Eligibility floors above, or lock a player "
+                f"into {pos} (a lock overrides the floor).")
+
+    if not eligible_free and eligible_but_locked:
+        who = ', '.join(f"{n} → {p}" for n, p in eligible_but_locked)
+        return (f"**{pos}**: the only eligible bat(s) are locked elsewhere ({who}). "
+                f"Unlock one of them, lower another position's floor to free a "
+                f"substitute, or lock a player into {pos}.")
+
+    # eligible_free non-empty but slot still unfilled → consumed by the assignment
+    # (their value was higher at another open slot). Rare; give a generic nudge.
+    return (f"**{pos}**: eligible bats exist ({', '.join(eligible_free[:3])}…) but the "
+            f"optimizer placed them at higher-value slots. Lock your preferred {pos} "
+            f"to force the assignment.")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # BATTING ORDER — THE BOOK (TANGO/LICHTMAN/DOLPHIN)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -487,7 +522,9 @@ def _render_depth_tab(league, bats, bat_names, locks, zr_floors, chart_locked):
     )
 
     # ── Floor editor ───────────────────────────────────────────────────────────
-    with st.expander("⚙️ Eligibility floors (predicted ZR)", expanded=False):
+    # Auto-open when the Lineup tab reported an unfilled slot, so the fix is in view.
+    _auto_open = bool(st.session_state.get('_lineup_unfilled', False))
+    with st.expander("⚙️ Eligibility floors (predicted ZR)", expanded=_auto_open):
         st.caption(
             "A bat is eligible at a position only if its projected full-season ZR "
             "clears the floor. Defaults encode your gameplay rule: strict up the "
@@ -588,11 +625,17 @@ def _render_lineup_tab(league, bats, pits, locks, zr_floors):
     assignment = result['assignment']
 
     if result['unfilled']:
-        st.error(
-            "⛔ Cannot fill: " + ', '.join(result['unfilled']) +
-            ". No eligible player clears the floor there. Lower the floor for that "
-            "position, or lock a player into it (a lock overrides the floor)."
+        # Flag the depth tab to auto-open the floors expander next render
+        st.session_state['_lineup_unfilled'] = True
+        st.error("⛔ Some field slots can't be filled — see why below.")
+        for pos in result['unfilled']:
+            st.warning(diagnose_unfilled(pos, bats, zr_floors, locks))
+        st.caption(
+            "Adjust eligibility floors or locks on the **📋 Depth Chart** tab "
+            "(the floors panel will be open for you)."
         )
+    else:
+        st.session_state['_lineup_unfilled'] = False
 
     # ── Defensive alignment card ───────────────────────────────────────────────
     by_name = {str(r.get('Name', '')): r for r in bats.to_dict('records')}
