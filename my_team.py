@@ -542,6 +542,35 @@ def render_my_team(league: League):
                     # running the heavy F1/rename pipeline on the entire league.
                     raw = pd.read_csv(uploaded, encoding='utf-8-sig', low_memory=False)
 
+                    # ── Engine-detection guard ──────────────────────────────────
+                    # OOTP 27 exports pre-suffix collision columns (CON_1, BABIP_1,
+                    # WAR_1 with underscores). An OOTP 26 file lacks these — pandas
+                    # would generate dot-suffixed duplicates (CON.1) instead. A v26
+                    # file run through v27 formulas produces silently-wrong output
+                    # (pitcher CON reads 0, F1 collapses negative; BABIP slope is
+                    # 1.7x off between engines). Refuse mismatched files loudly.
+                    v27_signature = {'CON_1', 'BABIP_1', 'WAR_1'}
+                    v26_signature = {'CON.1', 'BABIP.1', 'WAR.1'}
+                    has_v27 = bool(v27_signature & set(raw.columns))
+                    has_v26 = bool(v26_signature & set(raw.columns))
+                    if has_v26 and not has_v27:
+                        st.error(
+                            "⛔ This looks like an **OOTP 26** export, not OOTP 27. "
+                            "The column structures differ materially between engines "
+                            "(pitcher control, BABIP, and WAR columns are positioned and "
+                            "calibrated differently). Running it here would produce wrong "
+                            "F1 values — pitcher CON reads as 0 and F1 collapses negative. "
+                            "Use the OOTP 26 suite for this file, or re-export from OOTP 27."
+                        )
+                        return
+                    if not has_v27:
+                        st.warning(
+                            "⚠️ This CSV doesn't have the expected OOTP 27 column "
+                            "signature (CON_1 / BABIP_1 / WAR_1). It may be from a "
+                            "different export format. Results may be unreliable — "
+                            "verify pitcher F1 values look sane before trusting them."
+                        )
+
                     # Find the team column. ORG is canonical (registry A10) since
                     # multiple cities share team names. TM is fallback.
                     team_col = None
