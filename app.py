@@ -7,6 +7,7 @@ import pandas as pd
 import db
 import acquisitions as acq
 import my_team as mt
+import lineups as ln
 
 st.set_page_config(
     page_title="OOTP 27 Suite",
@@ -88,8 +89,7 @@ elif section == "📊 My Team":
     mt.render_my_team(league)
 
 elif section == "⚾ Lineups":
-    st.header("⚾ Lineups")
-    st.info("Coming soon — lineup construction with Hungarian algorithm optimization and ZR defense.")
+    ln.render_lineups(league)
 
 elif section == "🥎 Pitching":
     st.header("🥎 Pitching")
