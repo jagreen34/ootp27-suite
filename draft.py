@@ -406,8 +406,8 @@ def _render_board_tab(league, rows, state, pot_active=True, def_active=True,
             return ''
         bf = x['bestfit']
         if not bf['moves']:
-            return '✓'
-        return f"→{bf['best']} ({-bf['delta']:+.2f})"
+            return f"{bf['best']} ✓"          # ideal = listed; name shown for clarity
+        return f"→{bf['best']} ({-bf['delta']:+.2f})"  # profiles better elsewhere
 
     table = []
     for x in visible:
@@ -455,7 +455,8 @@ def _render_board_tab(league, rows, state, pot_active=True, def_active=True,
         "defensive WAR at the listed position vs an *average* glove there "
         "(◆ asset / ◇ liability / · ≈average) — predicted from current fielding "
         "ratings, which the registry shows are ~fixed from draft day, so no "
-        "projection needed.  **Fit** = ✓ if listed = best-fit position, else "
+        "projection needed.  **POS** = position he plays now; **Fit** = his ideal "
+        "(best-value) position — `POS ✓` when those match, else "
         "→ the position that maximizes glove + positional value (the WAR left on "
         "the table at his listed spot in parens). A `~` marks catcher, whose ZR "
         "model is weak by engine design — trust the bat there, not the glove "
@@ -541,155 +542,177 @@ def _render_board_tab(league, rows, state, pot_active=True, def_active=True,
 
 # ── ON-DEMAND PROSPECT INSPECT ─────────────────────────────────────────────────
 
+def _inspect_label(x):
+    return (f"{x['name'] or '(unnamed)'} — {x['pos']}, age {x['age']}  ·  "
+            f"Career {x['career']:.2f} → Disc {x['disc']:.2f}")
+
+
 def _render_inspect(visible, pot_active=True):
     """
-    Selectbox → a per-prospect panel with two parts:
-      1. Scouting card — handedness, and the full underlying ratings the board
-         can't fit: fielding block (bats) or arsenal + STM + velo (pitchers).
-      2. Delivery haircut — each discountable rating's current → potential →
-         discounted value + the factor applied. Shown when the prospect has
-         potential columns; otherwise a note explains the discount is off.
+    Prospect inspector. Renders the full per-prospect card (scouting + delivery
+    haircut + best-fit table). When the installed Streamlit supports st.dialog,
+    the card opens in a MODAL popup over the board (pick a prospect → popup);
+    otherwise it falls back to an inline expander so it works on any version.
     """
-    with st.expander("🔍 Inspect a prospect — scouting card + delivery haircut", expanded=False):
-        if not visible:
+    if not visible:
+        with st.expander("🔍 Inspect a prospect", expanded=False):
             st.info("No prospects to inspect.")
-            return
-        idxs = list(range(len(visible)))
-        def _label(i):
-            x = visible[i]
-            return (f"{x['name'] or '(unnamed)'} — {x['pos']}, age {x['age']}  ·  "
-                    f"Career {x['career']:.2f} → Disc {x['disc']:.2f}")
-        i = st.selectbox("Prospect", idxs, index=0, format_func=_label, key='draft_inspect_pick')
-        x = visible[i]
-        r = x['row']
+        return
 
-        # ── 1. Scouting card ────────────────────────────────────────────────
-        st.markdown(f"**{x['name'] or '(unnamed)'}** · {x['pos']} · age {x['age']} · "
-                    f"bats **{bats_hand(r)}** / throws **{throws_hand(r)}**")
-        if x['is_pit']:
-            ars = arsenal_detail(r)
-            line = (f"Stamina **{x['stm']}** · mid-velo **{x['velo']}** · "
-                    f"**{x['npitch']}** usable pitches (≥30)")
-            st.caption(line)
-            if ars:
-                st.dataframe(
-                    pd.DataFrame([{'Pitch': p, 'Grade': g} for p, g in ars]),
-                    use_container_width=True, hide_index=True)
-            else:
-                st.caption("No pitch grades present in the export.")
+    idxs = list(range(len(visible)))
+    dialog_fn = getattr(st, 'dialog', None) or getattr(st, 'experimental_dialog', None)
+
+    if dialog_fn is not None:
+        # ── Modal popup path ────────────────────────────────────────────────
+        @dialog_fn("🔍 Prospect card")
+        def _popup(idx):
+            _render_prospect_card(visible[idx])
+
+        st.markdown("**🔍 Inspect a prospect** — pick one to open his full card:")
+        i = st.selectbox("Prospect", idxs, index=0, format_func=lambda k: _inspect_label(visible[k]),
+                         key='draft_inspect_pick', label_visibility='collapsed')
+        if st.button("Open card", key='draft_inspect_open', use_container_width=False):
+            _popup(i)
+    else:
+        # ── Inline expander fallback (older Streamlit) ──────────────────────
+        with st.expander("🔍 Inspect a prospect — scouting card + delivery haircut", expanded=False):
+            i = st.selectbox("Prospect", idxs, index=0,
+                             format_func=lambda k: _inspect_label(visible[k]),
+                             key='draft_inspect_pick')
+            _render_prospect_card(visible[i])
+
+
+def _render_prospect_card(x):
+    """Full per-prospect card: scouting (handedness + fielding/arsenal) + delivery
+    haircut + best-fit position table. Used by both the modal and the fallback."""
+    r = x['row']
+    # ── 1. Scouting card ────────────────────────────────────────────────
+    st.markdown(f"**{x['name'] or '(unnamed)'}** · {x['pos']} · age {x['age']} · "
+                f"bats **{bats_hand(r)}** / throws **{throws_hand(r)}**")
+    if x['is_pit']:
+        ars = arsenal_detail(r)
+        line = (f"Stamina **{x['stm']}** · mid-velo **{x['velo']}** · "
+                f"**{x['npitch']}** usable pitches (≥30)")
+        st.caption(line)
+        if ars:
+            st.dataframe(
+                pd.DataFrame([{'Pitch': p, 'Grade': g} for p, g in ars]),
+                use_container_width=True, hide_index=True)
         else:
-            dd = defense_detail(r)
-            if dd:
-                st.caption("Underlying fielding (raw skills, not the position-experience "
-                           "rating):")
-                st.dataframe(
-                    pd.DataFrame([{'Skill': lab, 'Grade': val} for lab, val in dd]),
-                    use_container_width=True, hide_index=True)
-            else:
-                st.caption("No fielding columns in this export — add the fielding "
-                           "fields to the OOTP export to see range / arm / error here.")
-            # Best-fit position table — def WAR + positional value at each spot.
-            if x['glove'] is not None and dd:
-                bf = x['bestfit']
-                pvt = position_value_table(r)
+            st.caption("No pitch grades present in the export.")
+    else:
+        dd = defense_detail(r)
+        if dd:
+            st.caption("Underlying fielding (raw skills, not the position-experience "
+                       "rating):")
+            st.dataframe(
+                pd.DataFrame([{'Skill': lab, 'Grade': val} for lab, val in dd]),
+                use_container_width=True, hide_index=True)
+        else:
+            st.caption("No fielding columns in this export — add the fielding "
+                       "fields to the OOTP export to see range / arm / error here.")
+        # Best-fit position table — def WAR + positional value at each spot.
+        if x['glove'] is not None and dd:
+            bf = x['bestfit']
+            pvt = position_value_table(r)
+            st.caption(
+                "Defensive value by position (the bat is the same everywhere, so "
+                "best fit is a pure glove + positional-value call). **Glove WAR** "
+                "is vs an average fielder there; **Pos val** is the positional "
+                "premium; **Total** is what best-fit maximizes over *eligible* "
+                "spots (engine floor ≥40):")
+            pv_rows = []
+            for pr in pvt:
+                tag = []
+                if pr['listed']:   tag.append('listed')
+                if pr['pos'] == bf['best']: tag.append('BEST')
+                if not pr['eligible']: tag.append('ineligible')
+                if pr['low_conf']: tag.append('low-conf')
+                pv_rows.append({
+                    'Pos': pr['pos'],
+                    'Glove WAR': f"{pr['def_war']:+.2f}",
+                    'Pos val': f"{pr['pos_adj']:+.2f}",
+                    'Total': f"{pr['total']:+.2f}",
+                    '': ' · '.join(tag),
+                })
+            st.dataframe(pd.DataFrame(pv_rows), use_container_width=True, hide_index=True)
+            if bf['moves'] and not bf['low_conf']:
                 st.caption(
-                    "Defensive value by position (the bat is the same everywhere, so "
-                    "best fit is a pure glove + positional-value call). **Glove WAR** "
-                    "is vs an average fielder there; **Pos val** is the positional "
-                    "premium; **Total** is what best-fit maximizes over *eligible* "
-                    "spots (engine floor ≥40):")
-                pv_rows = []
-                for pr in pvt:
-                    tag = []
-                    if pr['listed']:   tag.append('listed')
-                    if pr['pos'] == bf['best']: tag.append('BEST')
-                    if not pr['eligible']: tag.append('ineligible')
-                    if pr['low_conf']: tag.append('low-conf')
-                    pv_rows.append({
-                        'Pos': pr['pos'],
-                        'Glove WAR': f"{pr['def_war']:+.2f}",
-                        'Pos val': f"{pr['pos_adj']:+.2f}",
-                        'Total': f"{pr['total']:+.2f}",
-                        '': ' · '.join(tag),
-                    })
-                st.dataframe(pd.DataFrame(pv_rows), use_container_width=True, hide_index=True)
-                if bf['moves'] and not bf['low_conf']:
-                    st.caption(
-                        f"➜ Profiles best at **{bf['best']}**, not {bf['listed']} "
-                        f"(**{bf['delta']:+.2f}** WAR vs staying). His listed-position "
-                        "Glove number reflects where he's tagged today; the engine will "
-                        "let him develop at the better spot (ratings clear the floor).")
-                elif not bf['moves']:
-                    st.caption(f"➜ Best fit **is** his listed {bf['listed']} — no move "
-                               "indicated.")
+                    f"➜ Profiles best at **{bf['best']}**, not {bf['listed']} "
+                    f"(**{bf['delta']:+.2f}** WAR vs staying). His listed-position "
+                    "Glove number reflects where he's tagged today; the engine will "
+                    "let him develop at the better spot (ratings clear the floor).")
+            elif not bf['moves']:
+                st.caption(f"➜ Best fit **is** his listed {bf['listed']} — no move "
+                           "indicated.")
 
-        # ── 2. Delivery haircut ─────────────────────────────────────────────
-        st.markdown("---")
-        bd = delivery_breakdown(r)
-        if not bd['any_pot']:
-            st.caption("**Delivery haircut:** no potential columns for this prospect "
-                       "→ Discounted = Career (no growth credited). Re-export with "
-                       "potentials to activate.")
-            return
+    # ── 2. Delivery haircut ─────────────────────────────────────────────
+    st.markdown("---")
+    bd = delivery_breakdown(r)
+    if not bd['any_pot']:
+        st.caption("**Delivery haircut:** no potential columns for this prospect "
+                   "→ Discounted = Career (no growth credited). Re-export with "
+                   "potentials to activate.")
+        return
 
-        amult = delivery_age_mult(x['age'])
-        gap = x['growth_bet']
-        st.markdown(
-            f"**Delivery haircut** — Career **{x['career']:.2f}** → Discounted "
-            f"**{x['disc']:.2f}** (growth-bet **{'+' if gap >= 0 else ''}{gap:.2f}** WAR)")
-        st.caption(
-            f"Age multiplier on every factor at age {x['age']}: **×{amult:.2f}** "
-            f"(1.00 at age {int(DELIVERY_AGE_DEFAULTS['ref_age'])}; younger delivers "
-            "more, clamped 0.50–1.50). Effective = locked factor × age multiplier, "
-            "capped at 1.00. Discounted rating = current + (potential − current) × effective."
-        )
+    amult = delivery_age_mult(x['age'])
+    gap = x['growth_bet']
+    st.markdown(
+        f"**Delivery haircut** — Career **{x['career']:.2f}** → Discounted "
+        f"**{x['disc']:.2f}** (growth-bet **{'+' if gap >= 0 else ''}{gap:.2f}** WAR)")
+    st.caption(
+        f"Age multiplier on every factor at age {x['age']}: **×{amult:.2f}** "
+        f"(1.00 at age {int(DELIVERY_AGE_DEFAULTS['ref_age'])}; younger delivers "
+        "more, clamped 0.50–1.50). Effective = locked factor × age multiplier, "
+        "capped at 1.00. Discounted rating = current + (potential − current) × effective."
+    )
 
-        det = []
-        for d in bd['ratings']:
-            if d['has_pot']:
-                growth = d['potential'] - d['current']
-                det.append({
-                    'Rating':     d['label'],
-                    'Current':    f"{d['current']:.0f}",
-                    'Potential':  f"{d['potential']:.0f}",
-                    'Promised':   f"+{growth:.0f}" if growth > 0 else f"{growth:.0f}",
-                    'Factor':     f"{d['factor']:.2f}",
-                    'Age×':       f"{d['age_mult']:.2f}",
-                    'Effective':  f"{d['eff_factor']:.2f}",
-                    'Discounted': f"{d['discounted']:.1f}",
-                })
-            else:
-                det.append({
-                    'Rating': d['label'], 'Current': f"{d['current']:.0f}",
-                    'Potential': '—', 'Promised': '—', 'Factor': f"{d['factor']:.2f}",
-                    'Age×': f"{d['age_mult']:.2f}", 'Effective': '—',
-                    'Discounted': f"{d['current']:.1f}*",
-                })
-        st.dataframe(pd.DataFrame(det), use_container_width=True, hide_index=True)
-
-        notes = []
-        if bd['is_pit']:
-            notes.append("SP **STM** has no delivery factor and stays at current "
-                         "(it's an innings-volume lever, not a developing quality).")
+    det = []
+    for d in bd['ratings']:
+        if d['has_pot']:
+            growth = d['potential'] - d['current']
+            det.append({
+                'Rating':     d['label'],
+                'Current':    f"{d['current']:.0f}",
+                'Potential':  f"{d['potential']:.0f}",
+                'Promised':   f"+{growth:.0f}" if growth > 0 else f"{growth:.0f}",
+                'Factor':     f"{d['factor']:.2f}",
+                'Age×':       f"{d['age_mult']:.2f}",
+                'Effective':  f"{d['eff_factor']:.2f}",
+                'Discounted': f"{d['discounted']:.1f}",
+            })
         else:
-            notes.append("**SPE** and the fielding skills have no delivery factor and "
-                         "stay at current.")
-        notes.append("Pitch grades, AGE, amateur, personality and HSC are outside the "
-                     "locked delivery study — held at current in the discount.")
-        if any(not d['has_pot'] for d in bd['ratings']):
-            notes.append("`*` = no potential column for that rating → no growth credited "
-                         "(shown at current, not silently zeroed).")
-        if bd['big_con_bet']:
-            notes.append("⚠️ **BIG-CON-bet** — 30+ promised control growth. Control "
-                         "development is high-bust, worse in older draftees (~22% "
-                         "delivery at 21+ vs ~57% at 17); the haircut above is doing "
-                         "real work here. Prefer arms that already throw strikes.")
-        st.caption("  ".join(f"• {n}" for n in notes))
-        st.caption(
-            "Factors are registry-locked **population means** (±5-10pt individual "
-            "variance) — a calibration anchor for expectations, not a per-prospect "
-            "guarantee. EYE is the OOTP-27 outlier (28% delivery vs 40-53%)."
-        )
+            det.append({
+                'Rating': d['label'], 'Current': f"{d['current']:.0f}",
+                'Potential': '—', 'Promised': '—', 'Factor': f"{d['factor']:.2f}",
+                'Age×': f"{d['age_mult']:.2f}", 'Effective': '—',
+                'Discounted': f"{d['current']:.1f}*",
+            })
+    st.dataframe(pd.DataFrame(det), use_container_width=True, hide_index=True)
+
+    notes = []
+    if bd['is_pit']:
+        notes.append("SP **STM** has no delivery factor and stays at current "
+                     "(it's an innings-volume lever, not a developing quality).")
+    else:
+        notes.append("**SPE** and the fielding skills have no delivery factor and "
+                     "stay at current.")
+    notes.append("Pitch grades, AGE, amateur, personality and HSC are outside the "
+                 "locked delivery study — held at current in the discount.")
+    if any(not d['has_pot'] for d in bd['ratings']):
+        notes.append("`*` = no potential column for that rating → no growth credited "
+                     "(shown at current, not silently zeroed).")
+    if bd['big_con_bet']:
+        notes.append("⚠️ **BIG-CON-bet** — 30+ promised control growth. Control "
+                     "development is high-bust, worse in older draftees (~22% "
+                     "delivery at 21+ vs ~57% at 17); the haircut above is doing "
+                     "real work here. Prefer arms that already throw strikes.")
+    st.caption("  ".join(f"• {n}" for n in notes))
+    st.caption(
+        "Factors are registry-locked **population means** (±5-10pt individual "
+        "variance) — a calibration anchor for expectations, not a per-prospect "
+        "guarantee. EYE is the OOTP-27 outlier (28% delivery vs 40-53%)."
+    )
 
 
 

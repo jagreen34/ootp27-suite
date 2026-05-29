@@ -1416,13 +1416,13 @@ def hand_str(row) -> str:
 # Listed position → the fielding axis that matters for the compact board summary.
 _DEF_AXIS = {
     'C':  [('Abi', 'C_ABI'), ('Arm', 'C_ARM'), ('Frm', 'C_FRM')],
-    '1B': [('Rng', 'IF_RNG'), ('Arm', 'IF_ARM'), ('Err', 'IF_ERR')],
-    '2B': [('Rng', 'IF_RNG'), ('Arm', 'IF_ARM'), ('Err', 'IF_ERR')],
-    '3B': [('Rng', 'IF_RNG'), ('Arm', 'IF_ARM'), ('Err', 'IF_ERR')],
-    'SS': [('Rng', 'IF_RNG'), ('Arm', 'IF_ARM'), ('Err', 'IF_ERR')],
-    'LF': [('Rng', 'OF_RNG'), ('Arm', 'OF_ARM'), ('Err', 'OF_ERR')],
-    'CF': [('Rng', 'OF_RNG'), ('Arm', 'OF_ARM'), ('Err', 'OF_ERR')],
-    'RF': [('Rng', 'OF_RNG'), ('Arm', 'OF_ARM'), ('Err', 'OF_ERR')],
+    '1B': [('IF Rng', 'IF_RNG'), ('Arm', 'IF_ARM'), ('Err', 'IF_ERR')],
+    '2B': [('IF Rng', 'IF_RNG'), ('Arm', 'IF_ARM'), ('Err', 'IF_ERR')],
+    '3B': [('IF Rng', 'IF_RNG'), ('Arm', 'IF_ARM'), ('Err', 'IF_ERR')],
+    'SS': [('IF Rng', 'IF_RNG'), ('Arm', 'IF_ARM'), ('Err', 'IF_ERR')],
+    'LF': [('OF Rng', 'OF_RNG'), ('Arm', 'OF_ARM'), ('Err', 'OF_ERR')],
+    'CF': [('OF Rng', 'OF_RNG'), ('Arm', 'OF_ARM'), ('Err', 'OF_ERR')],
+    'RF': [('OF Rng', 'OF_RNG'), ('Arm', 'OF_ARM'), ('Err', 'OF_ERR')],
 }
 
 
@@ -1437,8 +1437,12 @@ def _has_any(row, cols) -> bool:
 def defense_summary(row) -> str:
     """
     Compact position-appropriate fielding line for a batter:
-    'Rng 60 · Arm 55 · Err 50' (catchers: Abi/Arm/Frm). '—' if the export carries
-    no fielding columns for that axis.
+    'IF Rng 60 · Arm 55 · Err 50' (catchers: Abi/Arm/Frm). Range is explicitly
+    labeled IF/OF so it's unambiguous which one is shown. When the player ALSO
+    carries the off-axis range (a guy with both IF and OF range — e.g. a CF who can
+    also play infield), it's appended as '+ IF Rng NN' so the dual-eligibility is
+    visible (this is exactly the multi-position case the Fit column flags). '—' if
+    the export carries no fielding columns for the primary axis.
     """
     pos = str(row.get('POS', '')).strip()
     axis = _DEF_AXIS.get(pos)
@@ -1447,7 +1451,15 @@ def defense_summary(row) -> str:
                 else _DEF_AXIS['CF'])
     if not _has_any(row, [c for _, c in axis]):
         return '—'
-    return ' · '.join(f"{lab} {int(_s(row.get(c, 0)))}" for lab, c in axis)
+    primary = ' · '.join(f"{lab} {int(_s(row.get(c, 0)))}" for lab, c in axis)
+    # Append the OTHER range axis if present and not already the primary one.
+    primary_cols = {c for _, c in axis}
+    if pos != 'C':
+        if 'IF_RNG' in primary_cols and _has_any(row, ['OF_RNG']):
+            primary += f"  + OF Rng {int(_s(row.get('OF_RNG', 0)))}"
+        elif 'OF_RNG' in primary_cols and _has_any(row, ['IF_RNG']):
+            primary += f"  + IF Rng {int(_s(row.get('IF_RNG', 0)))}"
+    return primary
 
 
 # Full fielding block for the inspect card (label, source col).
