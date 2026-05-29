@@ -416,6 +416,193 @@ def pos_adj(row, pos: str) -> float:
     return (pa / 650.0) * POS_ADJ_CONSTANTS[pos]
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# GLOVE WAR + BEST-FIT POSITION  (A12 soft-tax; display only, never reorders)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Closes the draft board's defensive blind spot: F2 sees defense ONLY through a
+# flat position dummy, so a 75-range SS and a 40-range SS score identically. This
+# layer surfaces the glove explicitly using the deployed, sim-validated per-
+# position ZR models (predict ZR from CURRENT fielding ratings) → DEF_WAR.
+#
+# WHY no floor / no discount on defense (registry-locked):
+#   • A12 found defensive eligibility is a SOFT TAX, not a hard wall — premium
+#     positions punish a bad glove only ~1.2× harder than corners, smooth slope,
+#     no quality cliff. So we score continuously; we do NOT gate.
+#   • The ONLY real discontinuity is the engine eligibility floor (ratings ≥40,
+#     POS_SKILL_REQUIREMENTS) — "the game won't roster him there." That gates
+#     WHICH positions enter the best-fit argmax; nothing above it.
+#   • Defense is ~fixed age 17→prime (r 0.96–0.99), so DRAFT-DAY ratings are the
+#     prime ratings: def_war on current inputs is directly valid, no projection,
+#     no delivery haircut. (That's why fielding sits outside the discount layer.)
+#
+# DE-DOUBLE-COUNT: ZR is centered so 0 = league-average fielder. DEF_WAR is
+#   therefore runs ABOVE/BELOW an average glove at that position. F2's position
+#   dummy already credits the average player at the position; Glove WAR adds only
+#   the DEVIATION from average. So Career/Disc (with the dummy) + Glove (the
+#   deviation) do not double-count — which is also why Glove is an additive side
+#   column and never folds into the F2 rank.
+#
+# BEST-FIT POSITION: the bat is identical wherever he stands, so it CANCELS in the
+#   position comparison — best fit is a pure glove+positional calc:
+#       best_pos = argmax over engine-eligible positions of
+#                  ( def_war(pos) + pos_adj_fixed(pos) )
+#   A 75-range SS maximizes at SS (glove value huge) → stays, Glove lights up.
+#   A 45-range "SS" maximizes at 2B/3B/LF → relocates, the math doing the floor's
+#   job continuously instead of a hard cut.
+#
+# CATCHER CAVEAT: C ZR model is near-useless (R²=0.037) because OOTP barely varies
+#   catcher ZR (SD 2.84) — not a fixable measurement gap, the engine genuinely
+#   flattens catcher D. CERA is NOT a substitute (A8: debunked — CERA reflects the
+#   staff/defense behind the catcher, absorbed by pitcher PBABIP, not catcher
+#   skill). So Glove WAR for C is small-by-construction and flagged low-confidence;
+#   evaluate the bat + framing/arm tools directly. Best-fit never RELOCATES a
+#   non-catcher TO catcher (C requires C_ABI, and you don't convert a SS to C).
+
+# Fixed full-season PA basis so the POSITION comparison is clean (the PA term is
+# identical across positions for one player and cancels in the argmax; pinning it
+# also keeps draftees — who have no PA — on a sensible full-season scale).
+_BESTFIT_PA_BASIS = 650.0
+
+# Positions whose glove number we trust (C excluded — see caveat).
+LOW_CONF_DEF_POS = {'C'}
+
+# Defensive spectrum, hardest → easiest (standard difficulty order). Best-fit
+# won't move a player DOWN the spectrum (e.g. SS→2B) unless the value gain clears
+# a real margin — the per-position ZR models are fit independently and aren't
+# perfectly cross-calibrated at the extremes (the season-rollup concern), so a
+# sub-margin "move an elite SS to 2B" is noise, not signal. Moving UP the spectrum
+# (toward a harder, scarcer position he's eligible for) needs only to win outright.
+_DEF_SPECTRUM = ['SS', 'C', 'CF', '2B', '3B', 'RF', 'LF', '1B']
+_SPECTRUM_RANK = {p: i for i, p in enumerate(_DEF_SPECTRUM)}   # lower = harder
+# Minimum total-WAR gain to justify relocating DOWN the spectrum off the listed pos.
+_BESTFIT_RELOCATE_MARGIN = 0.40
+# If the listed-position glove is below this DEF_WAR, treat the player as miscast
+# there (a defensive liability) and free him to move on any positive gain.
+_LISTED_LIABILITY_ZR = -0.30
+
+
+def glove_war(row, pos: str | None = None) -> float:
+    """
+    DEF_WAR at a position from CURRENT fielding ratings = runs above/below an
+    average glove there (ZR-centered), so 0 ≈ average, + = asset, − = liability.
+    Defaults to the listed POS. 0.0 for pitchers / unmodeled positions.
+    """
+    p = str(pos if pos is not None else row.get('POS', '')).strip()
+    return def_war(row, p)
+
+
+def _pos_adj_fixed(pos: str) -> float:
+    """Positional adjustment on a fixed full-season basis (PA-independent)."""
+    if pos not in POS_ADJ_CONSTANTS:
+        return 0.0
+    return (_BESTFIT_PA_BASIS / 650.0) * POS_ADJ_CONSTANTS[pos]
+
+
+def _bestfit_eligible_positions(row) -> list:
+    """
+    Engine-eligible batter positions for this player (ratings ≥ floor), INCLUDING
+    the listed one. Only positions that are both ZR-modeled and skill-eligible.
+    """
+    listed = str(row.get('POS', '')).strip()
+    out = []
+    for pos, reqs in POS_SKILL_REQUIREMENTS.items():
+        if pos not in ZR_MODELS:        # batter, modeled positions only (skips SP)
+            continue
+        if all(_s(row.get(skill, 0)) >= floor for skill, floor in reqs):
+            out.append(pos)
+    if listed in ZR_MODELS and listed not in out:
+        out.append(listed)              # always allow scoring where he's listed
+    return out
+
+
+def position_value_table(row) -> list:
+    """
+    Per-position defensive+positional value for one batter, for the inspect card.
+    [{pos, def_war, pos_adj, total, eligible, listed, low_conf}], sorted by total
+    desc. 'total' = def_war + fixed pos_adj (the bat cancels across positions, so
+    this IS the quantity best-fit maximizes).
+    """
+    listed = str(row.get('POS', '')).strip()
+    elig = set(_bestfit_eligible_positions(row))
+    rows = []
+    for pos in ZR_MODELS:               # all modeled batter positions, for context
+        dw = def_war(row, pos)
+        pa = _pos_adj_fixed(pos)
+        rows.append({
+            'pos': pos, 'def_war': round(dw, 2), 'pos_adj': round(pa, 2),
+            'total': round(dw + pa, 2), 'eligible': pos in elig,
+            'listed': pos == listed, 'low_conf': pos in LOW_CONF_DEF_POS,
+        })
+    return sorted(rows, key=lambda r: r['total'], reverse=True)
+
+
+def best_fit_position(row) -> dict:
+    """
+    The position that maximizes def_war + pos_adj over ENGINE-ELIGIBLE positions.
+    Returns {best, listed, moves, delta, listed_total, best_total, low_conf}:
+      moves      — best != listed (the player profiles better elsewhere)
+      delta      — best_total − listed_total (value left on the table at listed)
+      low_conf   — best fit lands on a low-confidence-model position (C)
+    Falls back to the listed position when nothing is eligible/modeled.
+    """
+    listed = str(row.get('POS', '')).strip()
+    elig = _bestfit_eligible_positions(row)
+    if not elig:
+        return {'best': listed, 'listed': listed, 'moves': False, 'delta': 0.0,
+                'listed_total': 0.0, 'best_total': 0.0, 'low_conf': False}
+    scored = {p: def_war(row, p) + _pos_adj_fixed(p) for p in elig}
+    listed_total = (scored[listed] if listed in scored
+                    else (def_war(row, listed) + _pos_adj_fixed(listed)
+                          if listed in ZR_MODELS else 0.0))
+    # Never relocate TO a low-confidence-model position (C) the player isn't
+    # already listed at — you don't convert a fielder to catcher on a weak model.
+    cand = {p: v for p, v in scored.items()
+            if not (p in LOW_CONF_DEF_POS and p != listed)}
+    if not cand:
+        cand = scored
+
+    listed_rank = _SPECTRUM_RANK.get(listed, len(_DEF_SPECTRUM))
+    listed_glove = def_war(row, listed) if listed in ZR_MODELS else 0.0
+    # A below-average glove AT the listed spot (esp. a premium one) is a real
+    # signal he's miscast — allow the move on any positive gain. An adequate glove
+    # only moves down/level if the gain clears the noise margin.
+    liability_here = listed_glove < _LISTED_LIABILITY_ZR
+
+    def _acceptable(p):
+        if p == listed:
+            return False
+        gain = cand[p] - listed_total
+        prank = _SPECTRUM_RANK.get(p, len(_DEF_SPECTRUM))
+        if prank < listed_rank:          # harder/scarcer position → up-move
+            return gain > 0.0
+        # down/level the spectrum:
+        if liability_here:               # miscast where he is → any real gain frees him
+            return gain > 0.0
+        return gain >= _BESTFIT_RELOCATE_MARGIN   # adequate glove → needs margin
+
+    movers = [p for p in cand if _acceptable(p)]
+    if movers:
+        best = max(movers, key=cand.get)
+    else:
+        best = listed if listed in cand else max(cand, key=cand.get)
+    return {
+        'best': best, 'listed': listed, 'moves': best != listed,
+        'delta': round(cand[best] - listed_total, 2),
+        'listed_total': round(listed_total, 2), 'best_total': round(cand[best], 2),
+        'low_conf': best in LOW_CONF_DEF_POS,
+    }
+
+
+def draft_pool_can_glove(df) -> bool:
+    """True if the pool carries the fielding columns Glove WAR needs."""
+    try:
+        cols = set(map(str, df.columns))
+    except Exception:
+        return False
+    return any(c in cols for c in ('IF_RNG', 'OF_RNG', 'C_ABI'))
+
+
 def batter_f1(row) -> float:
     """Full batter F1 = OFF + DEF + POS_ADJ. R² = 0.738."""
     pos = str(row.get('POS', ''))
@@ -1191,6 +1378,123 @@ def f2_trade_value(projected_war: float, pos: str) -> float:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SCOUTING-DISPLAY HELPERS  (display only — NEVER feed the F2 scorer)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Handedness (B/T), stamina, arsenal size and the fielding block are scouting
+# CONTEXT, not F2 inputs (F2 is rating-driven; defense reaches batter F2 only via
+# the position dummy, never the raw range/arm; STM is already a pitcher F2 input
+# but isn't surfaced). These exist purely so a human can weight close calls on the
+# board. They degrade to '—' when a column is absent (a draft export may omit the
+# fielding / handedness columns) — never a silent zero that would read like a real
+# low rating. Arsenal SIZE = the existing cnt_eff_pitches (grades ≥ usable).
+
+_HAND_OK = {'R', 'L', 'S'}          # S = switch (bats only)
+
+
+def _hand1(v) -> str:
+    s = (str(v).strip().upper()[:1] if v is not None else '')
+    return s if s in _HAND_OK else '?'
+
+
+def bats_hand(row) -> str:
+    return _hand1(row.get('B'))
+
+
+def throws_hand(row) -> str:
+    return _hand1(row.get('T'))
+
+
+def hand_str(row) -> str:
+    """Compact 'bats/throws', e.g. 'L/R', 'S/R', 'R/R'. '—' if neither present."""
+    b, t = _hand1(row.get('B')), _hand1(row.get('T'))
+    if b == '?' and t == '?':
+        return '—'
+    return f"{b}/{t}"
+
+
+# Listed position → the fielding axis that matters for the compact board summary.
+_DEF_AXIS = {
+    'C':  [('Abi', 'C_ABI'), ('Arm', 'C_ARM'), ('Frm', 'C_FRM')],
+    '1B': [('Rng', 'IF_RNG'), ('Arm', 'IF_ARM'), ('Err', 'IF_ERR')],
+    '2B': [('Rng', 'IF_RNG'), ('Arm', 'IF_ARM'), ('Err', 'IF_ERR')],
+    '3B': [('Rng', 'IF_RNG'), ('Arm', 'IF_ARM'), ('Err', 'IF_ERR')],
+    'SS': [('Rng', 'IF_RNG'), ('Arm', 'IF_ARM'), ('Err', 'IF_ERR')],
+    'LF': [('Rng', 'OF_RNG'), ('Arm', 'OF_ARM'), ('Err', 'OF_ERR')],
+    'CF': [('Rng', 'OF_RNG'), ('Arm', 'OF_ARM'), ('Err', 'OF_ERR')],
+    'RF': [('Rng', 'OF_RNG'), ('Arm', 'OF_ARM'), ('Err', 'OF_ERR')],
+}
+
+
+def _has_any(row, cols) -> bool:
+    for c in cols:
+        v = row.get(c, None)
+        if v is not None and not (isinstance(v, float) and pd.isna(v)):
+            return True
+    return False
+
+
+def defense_summary(row) -> str:
+    """
+    Compact position-appropriate fielding line for a batter:
+    'Rng 60 · Arm 55 · Err 50' (catchers: Abi/Arm/Frm). '—' if the export carries
+    no fielding columns for that axis.
+    """
+    pos = str(row.get('POS', '')).strip()
+    axis = _DEF_AXIS.get(pos)
+    if axis is None:   # utility / unlisted bat → whichever block the export has
+        axis = (_DEF_AXIS['SS'] if _has_any(row, ['IF_RNG', 'IF_ARM', 'IF_ERR'])
+                else _DEF_AXIS['CF'])
+    if not _has_any(row, [c for _, c in axis]):
+        return '—'
+    return ' · '.join(f"{lab} {int(_s(row.get(c, 0)))}" for lab, c in axis)
+
+
+# Full fielding block for the inspect card (label, source col).
+_DEF_FULL = [
+    ('IF range', 'IF_RNG'), ('IF arm', 'IF_ARM'), ('IF error', 'IF_ERR'),
+    ('Turn DP', 'TDP'),
+    ('OF range', 'OF_RNG'), ('OF arm', 'OF_ARM'), ('OF error', 'OF_ERR'),
+    ('C ability', 'C_ABI'), ('C arm', 'C_ARM'), ('C framing', 'C_FRM'),
+]
+
+
+def defense_detail(row) -> list:
+    """All PRESENT fielding ratings as [(label, value)] for the inspect card."""
+    out = []
+    for lab, c in _DEF_FULL:
+        v = row.get(c, None)
+        if v is not None and not (isinstance(v, float) and pd.isna(v)):
+            out.append((lab, int(_s(v))))
+    return out
+
+
+def arsenal_detail(row) -> list:
+    """Present pitches as [(label, grade)] sorted high→low, for the inspect card."""
+    name = {'PIT_FB_GR': 'FB', 'PIT_CH': 'CH', 'PIT_SI': 'SI', 'PIT_SL': 'SL',
+            'PIT_CB': 'CB', 'PIT_CT': 'CT', 'PIT_SP': 'SP'}
+    got = [(name.get(c, c), int(_s(row.get(c, 0)))) for c in PITCH_GRADE_COLS
+           if _s(row.get(c, 0)) > 0]
+    return sorted(got, key=lambda kv: kv[1], reverse=True)
+
+
+def draft_pool_has_defense(df) -> bool:
+    try:
+        cols = set(map(str, df.columns))
+    except Exception:
+        return False
+    return any(c in cols for c in ('IF_RNG', 'OF_RNG', 'C_ABI'))
+
+
+def draft_pool_has_handedness(df) -> bool:
+    try:
+        cols = set(map(str, df.columns))
+    except Exception:
+        return False
+    return 'B' in cols or 'T' in cols
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # DRAFT-POOL PREP + COLUMN CONTRACT  (fail-loud, never silent-zero)
 # ══════════════════════════════════════════════════════════════════════════════
 #
@@ -1271,6 +1575,19 @@ DRAFT_F2_CONTRACT = [
     # flags / display
     ('PRONE',   ['Prone', 'PRONE'],       False),
     ('PIT_TYPE', ['Type', 'PIT_TYPE'],    False),
+    # scouting display (non-blocking; surfaced on the board, never fed to F2)
+    ('B',       ['B'],                     False),   # bats
+    ('T',       ['T'],                     False),   # throws
+    ('IF_RNG',  ['IF RNG', 'IF_RNG'],      False),
+    ('IF_ARM',  ['IF ARM', 'IF_ARM'],      False),
+    ('IF_ERR',  ['IF ERR', 'IF_ERR'],      False),
+    ('OF_RNG',  ['OF RNG', 'OF_RNG'],      False),
+    ('OF_ARM',  ['OF ARM', 'OF_ARM'],      False),
+    ('OF_ERR',  ['OF ERR', 'OF_ERR'],      False),
+    ('C_ABI',   ['C ABI', 'C_ABI'],        False),
+    ('C_ARM',   ['C ARM', 'C_ARM'],        False),
+    ('C_FRM',   ['C FRM', 'C_FRM'],        False),
+    ('TDP',     ['TDP'],                   False),
 ]
 
 
