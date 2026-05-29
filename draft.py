@@ -6,10 +6,14 @@ The one question no other module answers: given a PRE-DRAFT prospect pool
 projected mature WAR, how much do we trust it, and what hard rules apply?
 
   📋 Board        — F2 live-draft projected CAREER mature WAR (primary rank, BPA).
-                    Side columns: Window WAR (capturable in the AC play window),
+                    Side columns: Disc WAR (career re-scored on delivery-haircut
+                    expected-mature ratings) + Growth-bet (the gap = credited
+                    upside), Window WAR (capturable in the AC play window),
                     Projected Trade Value at maturity, and a read-only Need tag
-                    from My Team. Nothing reorders silently. Round selector drives
-                    the "never draft RP before Round 4" warning + slot context.
+                    from My Team. Nothing reorders silently. A 🔍 inspect panel
+                    opens any prospect's per-rating current→potential→discounted
+                    breakdown. Round selector drives the "never draft RP before
+                    Round 4" warning + slot context.
   🥎 Pitch Grades — H3 priority view: SI > CH > SL > FB prominent (the dominant
                     pitcher signal), STU/MOV demoted (roll-ups). Arsenal flags,
                     BIG-CON-bet, predraft SP-capability, top-pitch gate.
@@ -54,6 +58,8 @@ from db import League
 from acquisitions import (
     prep_draft_pool, audit_draft_columns,
     f2_war, f2_batter_war, f2_pitcher_war, f2_is_placeholder,
+    f2_discounted_war, delivery_breakdown, draft_pool_has_potentials,
+    DELIVERY_AGE_DEFAULTS, delivery_age_mult,
     f2_trade_value, window_war,
     F2_BATTER_R2, F2_PITCHER_R2, F2_BATTER_SD, F2_PITCHER_SD,
     draft_tier, DRAFT_TIER_DEFAULTS, DRAFT_TIER_LABELS, DRAFT_TIER_ICONS,
@@ -210,7 +216,11 @@ def build_board(pool_df: pd.DataFrame, league: League, state: dict) -> list[dict
         skip = draftee_skip_reason(r)
         raw_war = f2_war(r)
         fragile = draftee_fragile(r)
-        career = round(raw_war * (FRAGILE_VALUE_MULT if fragile else 1.0), 2)
+        fmult = FRAGILE_VALUE_MULT if fragile else 1.0
+        career = round(raw_war * fmult, 2)
+        # Discounted WAR — additive, re-scored on delivery-haircut mature ratings.
+        # Same fragile −40% applies (a value haircut independent of delivery).
+        disc = round(f2_discounted_war(r) * fmult, 2)
         age = int(_s(r.get('AGE', r.get('Age', 0))))
 
         # RP-ceiling = pitcher who fails the predraft SP-capability gate.
@@ -230,6 +240,8 @@ def build_board(pool_df: pd.DataFrame, league: League, state: dict) -> list[dict
             'pos':       pos,
             'age':       age,
             'career':    career,
+            'disc':      disc,
+            'growth_bet': round(disc - career, 2),   # gap = credited growth upside
             'window':    window_war(career, age),
             'tv':        f2_trade_value(career, pos),
             'tier':      draft_tier(career, state['tier_bands']),
@@ -312,12 +324,13 @@ def render_draft(league: League):
 
     state = _load_draft_state(league)
     rows = build_board(pool, league, state)
+    pot_active = draft_pool_has_potentials(pool)
 
     tab_board, tab_grades, tab_method = st.tabs(
         ["📋 Board", "🥎 Pitch Grades", "📐 Methodology"]
     )
     with tab_board:
-        _render_board_tab(league, rows, state)
+        _render_board_tab(league, rows, state, pot_active)
     with tab_grades:
         _render_grades_tab(rows)
     with tab_method:
@@ -326,7 +339,7 @@ def render_draft(league: League):
 
 # ── BOARD TAB ─────────────────────────────────────────────────────────────────
 
-def _render_board_tab(league, rows, state):
+def _render_board_tab(league, rows, state, pot_active=True):
     # Round selector — drives the RP-before-R4 warning + slot context.
     c1, c2 = st.columns([1, 3])
     with c1:
@@ -352,16 +365,25 @@ def _render_board_tab(league, rows, state):
     early_round = int(rnd) < RP_ROUND_FLOOR
 
     visible = [x for x in rows if (show_skipped or not x['skip'])]
+    # Colorblind-safe glyph for a notable growth bet (▲ scales with the gap).
+    def _gb_glyph(gap):
+        if not pot_active or gap < 0.3: return ''
+        if gap >= 1.0: return '▲▲'
+        return '▲'
     table = []
     for x in visible:
         # RP-before-R4 inline marker on the row when relevant.
         rp_warn = ' ⛔R4' if (x['rp_ceiling'] and early_round) else ''
+        gb = x['growth_bet']
         table.append({
             ' ':            DRAFT_TIER_ICONS[x['tier']],
             'Name':         x['name'] + (' 🚫' if x['skip'] else ''),
             'POS':          x['pos'] + rp_warn,
             'Age':          x['age'],
             'Career WAR':   x['career'],
+            'Disc WAR':     (x['disc'] if pot_active else x['career']),
+            'Growth-bet':   (f"{_gb_glyph(gb)} +{gb:.2f}".strip() if (pot_active and gb > 0)
+                             else ('+0.00' if pot_active else '—')),
             'Window WAR':   x['window'],
             'Proj TV':      x['tv'],
             'Need':         '✓' if x['need'] else '',
@@ -370,15 +392,34 @@ def _render_board_tab(league, rows, state):
     st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True,
                  height=min(620, 80 + 35 * len(table)))
 
+    if not pot_active:
+        st.warning(
+            "⚠️ **Discount inactive — no potential columns found in this pool.** "
+            "`Disc WAR` is showing **Career WAR** unchanged and `Growth-bet` is "
+            "`—`. The delivery haircut needs the prospect potential columns "
+            "(`CON P`, `STU P`, `EYE P`, …) in the export. Re-export the draft "
+            "pool with potentials included to activate the Discounted ranking. "
+            "(Not silently zeroed — the column is honest about being off.)"
+        )
+
     st.caption(
-        "**Career WAR** = raw projected mature WAR (the BPA rank). **Window WAR** = "
-        "the portion capturable in ~4-5 AC sim-seasons (informational — younger "
-        "prospects show less). **Proj TV** = trade value at maturity, full 6-yr "
-        "control (the BPA relief valve: take the best player, convert to need "
-        "later). **Need ✓** = My Team auto-config flags this position (read-only, "
-        "never reorders). Nothing here reorders silently — all numbers visible, "
-        "you decide close calls."
+        "**Career WAR** = raw projected mature WAR on **current** ratings (the BPA "
+        "rank — nothing reorders it). **Disc WAR** = the same F2 re-scored on "
+        "**expected-mature** ratings: current + promised growth haircut by the "
+        "registry-locked delivery factors (batter CON/GAP .48, POW .45, EYE .28; "
+        "pitcher CON .43, STU .53, MOV .40), age-adjusted (younger draftees deliver "
+        "2-3× the growth). **Growth-bet** = Disc − Career = the projected upside "
+        "surviving the haircut (▲ / ▲▲ mark the bigger bets). A finished college bat "
+        "shows ≈0; a toolsy 17-yo shows a large ▲. Disc is **additive** — it never "
+        "reorders the board. **Window WAR** = the portion capturable in ~4-5 AC "
+        "sim-seasons. **Proj TV** = trade value at maturity (full 6-yr control). "
+        "**Need ✓** = My Team auto-config (read-only). Open any prospect below to "
+        "see the per-rating haircut."
     )
+
+    # ── On-demand per-rating delivery inspect (selectbox → legible haircut panel) ─
+    if pot_active:
+        _render_delivery_inspect(visible)
 
     if any(x['need'] for x in visible):
         st.caption("ℹ️ Need tags reflect your current My Team roster. No My Team "
@@ -428,7 +469,89 @@ def _render_board_tab(league, rows, state):
             st.success("Reset."); st.rerun()
 
 
-# ── PITCH GRADES TAB ──────────────────────────────────────────────────────────
+# ── ON-DEMAND DELIVERY INSPECT ─────────────────────────────────────────────────
+
+def _render_delivery_inspect(visible):
+    """
+    Selectbox → panel making one prospect's delivery haircut legible: each
+    discountable rating's current → potential → discounted value and the factor
+    (+ age multiplier) applied. SPE/STM and everything outside the locked study
+    are noted as held at current. Pulls Career/Disc from the board rows so the
+    fragile −40% (if any) is reflected consistently.
+    """
+    with st.expander("🔍 Inspect a prospect — per-rating delivery haircut", expanded=False):
+        if not visible:
+            st.info("No prospects to inspect.")
+            return
+        idxs = list(range(len(visible)))
+        def _label(i):
+            x = visible[i]
+            return f"{x['name'] or '(unnamed)'} — {x['pos']}, age {x['age']}  ·  Career {x['career']:.2f} → Disc {x['disc']:.2f}"
+        i = st.selectbox("Prospect", idxs, index=0, format_func=_label, key='draft_inspect_pick')
+        x = visible[i]
+        bd = delivery_breakdown(x['row'])
+
+        amult = delivery_age_mult(x['age'])
+        gap = x['growth_bet']
+        head = (f"**{x['name'] or '(unnamed)'}** · {x['pos']} · age {x['age']}  —  "
+                f"Career **{x['career']:.2f}** → Discounted **{x['disc']:.2f}** "
+                f"(growth-bet **{'+' if gap >= 0 else ''}{gap:.2f}** WAR)")
+        st.markdown(head)
+        st.caption(
+            f"Age multiplier on every factor at age {x['age']}: **×{amult:.2f}** "
+            f"(1.00 at age {int(DELIVERY_AGE_DEFAULTS['ref_age'])}; younger delivers "
+            "more, clamped 0.50–1.50). Effective = locked factor × age multiplier, "
+            "capped at 1.00. Discounted rating = current + (potential − current) × effective."
+        )
+
+        det = []
+        for d in bd['ratings']:
+            if d['has_pot']:
+                growth = d['potential'] - d['current']
+                det.append({
+                    'Rating':     d['label'],
+                    'Current':    f"{d['current']:.0f}",
+                    'Potential':  f"{d['potential']:.0f}",
+                    'Promised':   f"+{growth:.0f}" if growth > 0 else f"{growth:.0f}",
+                    'Factor':     f"{d['factor']:.2f}",
+                    'Age×':       f"{d['age_mult']:.2f}",
+                    'Effective':  f"{d['eff_factor']:.2f}",
+                    'Discounted': f"{d['discounted']:.1f}",
+                })
+            else:
+                det.append({
+                    'Rating': d['label'], 'Current': f"{d['current']:.0f}",
+                    'Potential': '—', 'Promised': '—', 'Factor': f"{d['factor']:.2f}",
+                    'Age×': f"{d['age_mult']:.2f}", 'Effective': '—',
+                    'Discounted': f"{d['current']:.1f}*",
+                })
+        st.dataframe(pd.DataFrame(det), use_container_width=True, hide_index=True)
+
+        notes = []
+        if bd['is_pit']:
+            notes.append("SP **STM** has no delivery factor and stays at current "
+                         "(it's an innings-volume lever, not a developing quality).")
+        else:
+            notes.append("**SPE** has no delivery factor and stays at current.")
+        notes.append("Pitch grades, AGE, amateur, personality and HSC are outside the "
+                     "locked delivery study — held at current in the discount.")
+        if any(not d['has_pot'] for d in bd['ratings']):
+            notes.append("`*` = no potential column for that rating → no growth credited "
+                         "(shown at current, not silently zeroed).")
+        if bd['big_con_bet']:
+            notes.append("⚠️ **BIG-CON-bet** — 30+ promised control growth. Control "
+                         "development is high-bust, worse in older draftees (~22% "
+                         "delivery at 21+ vs ~57% at 17); the haircut above is doing "
+                         "real work here. Prefer arms that already throw strikes.")
+        st.caption("  ".join(f"• {n}" for n in notes))
+        st.caption(
+            "Factors are registry-locked **population means** (±5-10pt individual "
+            "variance) — a calibration anchor for expectations, not a per-prospect "
+            "guarantee. EYE is the OOTP-27 outlier (28% delivery vs 40-53%)."
+        )
+
+
+
 
 def _render_grades_tab(rows):
     st.subheader("🥎 Pitcher prospects — pitch-grade view")
@@ -519,6 +642,26 @@ def _render_methodology():
         "stays in the batter/pitcher formula (the 9→2 reduction was rejected), but "
         "amateur stats carry little independent causal signal beyond ratings; don't "
         "over-weight them."
+    )
+    st.markdown(
+        "**Discounted WAR — the delivery-haircut view (additive, never reorders):** "
+        "Career WAR scores **current** ratings. Disc WAR re-scores the *same* F2 on "
+        "**expected-mature** ratings — `current + (potential − current) × factor` — "
+        "using the registry-locked OOTP-27 delivery factors (batter CON **.48** / "
+        "GAP **.48** / POW **.45** / EYE **.28**; pitcher CON **.43** / STU **.53** / "
+        "MOV **.40**). **EYE is the standout**: OOTP 27 under-delivers projected eye "
+        "discipline (28% vs 40-53% for everything else), so a high-EYE-projection bat "
+        "loses most of that growth. Factors are **age-adjusted** — younger draftees "
+        "deliver 2-3× the promised growth (the same mechanism behind F2's negative "
+        "AGE coefficient), applied as a shared multiplier (1.0 at age 19, clamped "
+        "0.50–1.50). **SPE/STM** and everything outside the study (pitch grades, "
+        "amateur, personality, HSC) hold at current. The **Growth-bet** column "
+        "(Disc − Career) is the signal: how much projected upside survives the "
+        "haircut — large for toolsy teens, ≈0 for finished college players. Open the "
+        "🔍 inspect panel for any prospect's per-rating breakdown. Factors are "
+        "population means (±5-10pt individual SD): an anchor, not a guarantee. The "
+        "age curve is calibrated on the only age-stratified data (pitcher CON) and "
+        "generalized across ratings — revisit at the AC re-fit."
     )
     st.markdown(
         "**Pitcher uncertainty (blanket caveat, not a per-prospect flag):** "

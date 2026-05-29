@@ -989,6 +989,193 @@ def f2_war(row) -> float:
     return f2_batter_war(row)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# DELIVERY-DISCOUNT LAYER  (registry-locked; the "Discounted WAR" view)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# WHAT: Career WAR (above) scores a prospect on CURRENT ratings — the conservative
+#   floor, what they ARE today. This layer re-scores F2 on EXPECTED-MATURE ratings:
+#       expected = current + (potential − current) × delivery_factor × age_mult
+#   then runs the SAME F2 scorer on those discounted ratings. The result sits
+#   between Career WAR (full discount, current only) and an undiscounted potential-
+#   ceiling WAR (zero discount). Disc WAR ≥ Career WAR; the GAP (Disc − Career) is
+#   the growth-bet signal — how much projected upside survives the delivery haircut.
+#
+# FACTORS: locked population means (registry "Production discount factors", OOTP 27
+#   A-T). EYE is the standout — OOTP 27 under-delivers projected eye discipline at
+#   28% vs 40-53% for everything else. Only the seven ratings with a measured
+#   factor are discounted; SPE / STM have no factor (and no growth claim worth
+#   modeling) → they stay at CURRENT, untouched. Pitch grades, AGE, amateur,
+#   personality, position, HSC stay at current too — outside the locked study.
+#
+# AGE: the registry's "younger draftees deliver 2-3× the promised growth" finding.
+#   The only age-STRATIFIED data is pitcher CON at 15+ promised growth (57% @ 17 →
+#   22% @ 21). We express that as a SHARED multiplier on the locked factors,
+#   anchored mult=1.0 at the population-typical draft age and clamped to a ~3× span
+#   end-to-end (honoring "2-3×"). Applied across all seven ratings — the headline
+#   is framed generally ("the mechanism behind the negative AGE coefficient"), and
+#   the per-rating panel shows the multiplier so the assumption is legible. The
+#   factors are population means with ±5-10pt individual SD: a calibration anchor,
+#   not a per-prospect guarantee. Revisit the age curve (and the all-vs-CON-only
+#   generalization) at the AC re-fit.
+#
+# NOT DOUBLE-COUNTING AGE: the F2 fit uses current ratings + AGE (a strong negative
+#   coefficient — "a literal delivery-rate effect" per the registry). That AGE term
+#   is UNCHANGED between Career and Disc (we keep real AGE in both feature vectors),
+#   so it CANCELS in the Disc − Career gap. The gap is driven only by credited
+#   growth; the age multiplier modulates that growth credit (a different channel
+#   than the level effect the AGE coefficient captures). The two are complementary,
+#   not redundant.
+#
+# Defaults are module constants (the layer works with no config); the Draft module
+# may pass per-league overrides read from config.json's draft_state.
+
+# Locked population-mean delivery factors (registry: OOTP 27 A-T).
+DELIVERY_FACTORS = {
+    # batter
+    'CON': 0.48, 'GAP': 0.48, 'POW': 0.45, 'EYE': 0.28,
+    # pitcher
+    'PIT_CON': 0.43, 'STU': 0.53, 'MOV': 0.40,
+}
+
+# Rating → its canonical (post-prep) potential column.
+DELIVERY_POT_COL = {
+    'CON': 'CON_P', 'GAP': 'GAP_P', 'POW': 'POW_P', 'EYE': 'EYE_P',
+    'PIT_CON': 'PIT_CON_P', 'STU': 'STU_P', 'MOV': 'MOV_P',
+}
+
+# Human labels for the on-demand per-rating panel.
+DELIVERY_LABELS = {
+    'CON': 'CON (Contact)', 'GAP': 'GAP (Gap power)', 'POW': 'POW (Power)',
+    'EYE': 'EYE (Eye)',     'PIT_CON': 'CON (Control)', 'STU': 'STU (Stuff)',
+    'MOV': 'MOV (Movement)',
+}
+
+# Which ratings get discounted, by cohort (the rest stay at current).
+_DELIVERY_BAT = ['CON', 'GAP', 'POW', 'EYE']
+_DELIVERY_PIT = ['PIT_CON', 'STU', 'MOV']
+
+# Age-multiplier defaults (registry "2-3×-younger-delivers"; pitcher-CON anchors).
+DELIVERY_AGE_DEFAULTS = {
+    'ref_age':  19.0,   # mult = 1.0 here (≈ where the pop-mean factors sit)
+    'slope':    0.15,   # per year younger than ref_age (younger delivers more)
+    'mult_min': 0.50,   # clamp floor  → ~3× end-to-end span (honors "2-3×")
+    'mult_max': 1.50,   # clamp ceiling
+}
+
+
+def delivery_age_mult(age, params: dict | None = None) -> float:
+    """
+    Shared multiplier on the locked delivery factors. 1.0 at ref_age, rising for
+    younger / falling for older, clamped. Calibrated to the pitcher-CON age
+    stratification (57% @ 17 → 22% @ 21) — the only age-resolved data in the
+    registry — and applied across ratings as the registry's general finding.
+    """
+    p = {**DELIVERY_AGE_DEFAULTS, **(params or {})}
+    a = _s(age, p['ref_age'])
+    m = 1.0 + p['slope'] * (p['ref_age'] - a)
+    return float(min(p['mult_max'], max(p['mult_min'], m)))
+
+
+def expected_mature_rating(row, rating: str, age_params: dict | None = None) -> dict:
+    """
+    Per-rating delivery detail for one prospect. Returns a dict:
+      {rating, label, current, potential, has_pot, factor, age_mult, eff_factor,
+       discounted}
+    `has_pot` is False when the potential column is absent/blank — in that case
+    discounted == current (no silent growth invented) and the caller surfaces it.
+    Discounted is clamped between current and potential (growth path; no overshoot).
+    """
+    cur_col = rating
+    pot_col = DELIVERY_POT_COL[rating]
+    cur = _s(row.get(cur_col, 0))
+    base = DELIVERY_FACTORS[rating]
+    amult = delivery_age_mult(row.get('AGE', row.get('Age', 0)), age_params)
+    eff = float(min(1.0, max(0.0, base * amult)))
+
+    raw_pot = row.get(pot_col, None)
+    has_pot = raw_pot is not None and not (isinstance(raw_pot, float) and pd.isna(raw_pot))
+    if not has_pot:
+        return {'rating': rating, 'label': DELIVERY_LABELS[rating], 'current': cur,
+                'potential': None, 'has_pot': False, 'factor': base,
+                'age_mult': round(amult, 3), 'eff_factor': round(eff, 3),
+                'discounted': cur}
+
+    pot = _s(raw_pot, cur)
+    disc = cur + (pot - cur) * eff
+    lo, hi = (cur, pot) if pot >= cur else (pot, cur)   # clamp to the growth band
+    disc = float(min(hi, max(lo, disc)))
+    return {'rating': rating, 'label': DELIVERY_LABELS[rating], 'current': cur,
+            'potential': pot, 'has_pot': True, 'factor': base,
+            'age_mult': round(amult, 3), 'eff_factor': round(eff, 3),
+            'discounted': round(disc, 2)}
+
+
+def _delivery_ratings_for(pos: str) -> list:
+    return _DELIVERY_PIT if str(pos).strip() in PITCHER_POSITIONS else _DELIVERY_BAT
+
+
+def _discounted_row(row, age_params: dict | None = None):
+    """
+    Overlay the cohort's discounted ratings on a copy of the row, leaving every
+    other field (AGE, POS, pitch grades, amateur, personality, HSC, SPE/STM) at
+    its real value. Feeds straight into the existing _f2_feature_vector contract.
+    """
+    pos = str(row.get('POS', '')).strip()
+    try:
+        overlay = dict(row)            # pandas Series → plain dict
+    except Exception:
+        overlay = {k: row.get(k) for k in row.keys()} if hasattr(row, 'keys') else dict(row)
+    for rating in _delivery_ratings_for(pos):
+        d = expected_mature_rating(row, rating, age_params)
+        overlay[rating] = d['discounted']     # interactions (POW_EYE, CON_GAP) recompute downstream
+    return overlay
+
+
+def f2_discounted_war(row, age_params: dict | None = None) -> float:
+    """
+    F2 mature WAR re-scored on EXPECTED-MATURE (delivery-discounted) ratings.
+    Same scorer, same coefficients — only the seven discountable ratings shift.
+    """
+    pos = str(row.get('POS', '')).strip()
+    overlay = _discounted_row(row, age_params)
+    if pos in PITCHER_POSITIONS:
+        return _f2_score(overlay, _F2_PITCHER_COEF, _F2_PITCHER_INTERCEPT)
+    return _f2_score(overlay, _F2_BATTER_COEF, _F2_BATTER_INTERCEPT)
+
+
+def delivery_breakdown(row, age_params: dict | None = None) -> dict:
+    """
+    The on-demand inspect payload for one prospect:
+      {'pos', 'is_pit', 'ratings': [per-rating dicts...], 'any_pot': bool,
+       'big_con_bet': bool, 'career_war', 'disc_war'}
+    `any_pot` is False when NONE of the cohort's potential columns are present —
+    the board shows the column but flags the discount as inactive (fail-loud-
+    visible, never a silent Disc==Career masquerading as a real haircut).
+    """
+    pos = str(row.get('POS', '')).strip()
+    is_pit = pos in PITCHER_POSITIONS
+    ratings = [expected_mature_rating(row, r, age_params)
+               for r in _delivery_ratings_for(pos)]
+    any_pot = any(d['has_pot'] for d in ratings)
+    return {
+        'pos': pos, 'is_pit': is_pit, 'ratings': ratings, 'any_pot': any_pot,
+        'big_con_bet': bool(big_con_bet_flag(row)),
+        'career_war': f2_war(row),
+        'disc_war':   f2_discounted_war(row, age_params),
+    }
+
+
+def draft_pool_has_potentials(df) -> bool:
+    """True if the prepped pool carries ANY discountable potential column.
+    When False the Discounted column is shown but flagged inactive."""
+    try:
+        cols = set(map(str, df.columns))
+    except Exception:
+        return False
+    return any(pc in cols for pc in DELIVERY_POT_COL.values())
+
+
 # ── Draftee trade value ───────────────────────────────────────────────────────
 # A drafted prospect is team-controlled from debut: ML_YRS=0, ML_DAYS=0 →
 # control window = the full 6 service years. That maximum early-control window is
