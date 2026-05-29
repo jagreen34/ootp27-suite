@@ -10,6 +10,7 @@ import my_team as mt
 import lineups as ln
 import pitching as pit
 import draft as drf
+import development as dev
 
 st.set_page_config(
     page_title="OOTP 27 Suite",
@@ -100,8 +101,7 @@ elif section == "📝 Draft":
     drf.render_draft(league)
 
 elif section == "🌱 Development":
-    st.header("🌱 Development")
-    st.info("Coming soon — prospect tracking, delivery rate projections, reserve slot management, service time planning.")
+    dev.render_development(league)
 
 elif section == "🧑 Player Lookup":
     st.header("🧑 Player Lookup")
