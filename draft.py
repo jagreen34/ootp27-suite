@@ -433,8 +433,41 @@ def _render_board_tab(league, rows, state, pot_active=True, def_active=True,
             'Need':         '✓' if x['need'] else '',
             'Flags':        x['flags'],
         })
-    st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True,
-                 height=min(620, 80 + 35 * len(table)))
+    df = pd.DataFrame(table)
+    # Row-selection on the board itself: click a row's selector → open that card.
+    # Requires Streamlit >= 1.35 (on_select); falls back gracefully if unsupported.
+    board_sel = None
+    dialog_fn = getattr(st, 'dialog', None) or getattr(st, 'experimental_dialog', None)
+    try:
+        board_sel = st.dataframe(
+            df, use_container_width=True, hide_index=True,
+            height=min(620, 80 + 35 * len(table)),
+            on_select='rerun', selection_mode='single-row', key='draft_board_table')
+    except TypeError:
+        # older Streamlit without on_select — plain render, selector below handles it
+        st.dataframe(df, use_container_width=True, hide_index=True,
+                     height=min(620, 80 + 35 * len(table)))
+
+    # If a row was selected in the board, open that prospect's card.
+    sel_rows = []
+    if board_sel is not None:
+        try:
+            sel_rows = board_sel['selection']['rows']
+        except (KeyError, TypeError):
+            sel_rows = []
+    if sel_rows:
+        sel_i = sel_rows[0]
+        if 0 <= sel_i < len(visible):
+            if dialog_fn is not None:
+                @dialog_fn("🔍 Prospect card")
+                def _board_popup(idx=sel_i):
+                    _render_prospect_card(visible[idx])
+                _board_popup()
+            else:
+                with st.container():
+                    _render_prospect_card(visible[sel_i])
+        st.caption("👆 Select a row in the board above to open that prospect's card "
+                   "(or use the picker at the bottom).")
 
     if not pot_active:
         st.warning(
@@ -485,11 +518,11 @@ def _render_board_tab(league, rows, state, pot_active=True, def_active=True,
         "shows ≈0; a toolsy 17-yo shows a large ▲. Disc is **additive** — it never "
         "reorders the board. **Window WAR** = the portion capturable in ~4-5 AC "
         "sim-seasons. **Proj TV** = trade value at maturity (full 6-yr control). "
-        "**Need ✓** = My Team auto-config (read-only). Open any prospect below to "
-        "see the per-rating haircut."
+        "**Need ✓** = My Team auto-config (read-only). **Select a row** to open that "
+        "prospect's full card with the per-rating haircut."
     )
 
-    # ── On-demand prospect inspect (scouting card + per-rating delivery haircut) ─
+    # ── Fallback picker (board row-select above is the primary path) ─────────────
     _render_inspect(visible, pot_active)
 
     if any(x['need'] for x in visible):
@@ -568,7 +601,7 @@ def _render_inspect(visible, pot_active=True):
         def _popup(idx):
             _render_prospect_card(visible[idx])
 
-        st.markdown("**🔍 Inspect a prospect** — pick one to open his full card:")
+        st.markdown("**🔍 Or pick from the list** — open a prospect's full card:")
         i = st.selectbox("Prospect", idxs, index=0, format_func=lambda k: _inspect_label(visible[k]),
                          key='draft_inspect_pick', label_visibility='collapsed')
         if st.button("Open card", key='draft_inspect_open', use_container_width=False):
