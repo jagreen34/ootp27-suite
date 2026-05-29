@@ -571,34 +571,87 @@ def _render_optimizer(league: League, cfg: dict):
             _render_pitchers(pits, cfg, rep['ok_pitch_pool'])
 
 
+_BAT_ORDER = ['Power', 'BABIP', "Avoid K's", 'Eye', 'Gap', 'Running', 'Defense']
+_PIT_MAIN_ORDER = ['Movement', 'Control', 'Stamina']
+
+
+def _inspect_picker(recs: list, table_df: pd.DataFrame, card_fn, key_prefix: str,
+                    height: int, label_fn):
+    """
+    Shared inspect mechanism, mirroring draft.py's board pattern:
+      • Row-select on the table itself (Streamlit ≥1.35 on_select) opens the
+        player's card in a MODAL dialog over the board.
+      • try/except falls back to a plain table on older Streamlit.
+      • A selectbox + 'Open plan' button below is the explicit fallback picker
+        (and the only path when on_select / st.dialog are unavailable, where it
+        degrades to an inline expander). card_fn renders the card in all paths.
+    """
+    dialog_fn = getattr(st, 'dialog', None) or getattr(st, 'experimental_dialog', None)
+
+    def _open(idx):
+        if dialog_fn is not None:
+            @dialog_fn("🔍 Development plan")
+            def _popup():
+                card_fn(recs[idx])
+            _popup()
+        else:
+            with st.container():
+                card_fn(recs[idx])
+
+    board_sel = None
+    try:
+        board_sel = st.dataframe(table_df, use_container_width=True, hide_index=True,
+                                 height=height, on_select='rerun',
+                                 selection_mode='single-row', key=f'{key_prefix}_table')
+    except TypeError:
+        st.dataframe(table_df, use_container_width=True, hide_index=True, height=height)
+
+    sel_rows = []
+    if board_sel is not None:
+        try:
+            sel_rows = board_sel['selection']['rows']
+        except (KeyError, TypeError):
+            sel_rows = []
+    if sel_rows and 0 <= sel_rows[0] < len(recs):
+        _open(sel_rows[0])
+
+    st.caption("👆 Select a row to open that player's full slider plan "
+               "(or use the picker below).")
+
+    idxs = list(range(len(recs)))
+    if dialog_fn is not None:
+        st.markdown("**🔍 Or pick from the list:**")
+        i = st.selectbox("Player", idxs, index=0, format_func=label_fn,
+                         key=f'{key_prefix}_pick', label_visibility='collapsed')
+        if st.button("Open plan", key=f'{key_prefix}_open'):
+            _open(i)
+    else:
+        with st.expander("🔍 Inspect a player", expanded=False):
+            i = st.selectbox("Player", idxs, index=0, format_func=label_fn,
+                             key=f'{key_prefix}_pick')
+            card_fn(recs[i])
+
+
 def _render_batters(bats: pd.DataFrame, cfg: dict):
     recs = [recommend_batter(r.to_dict(), cfg) for _, r in bats.iterrows()]
     recs = [r for r in recs if r]
-    # Sort by total weighted gap (where the budget actually buys something).
     recs.sort(key=lambda r: sum(r['weighted_gaps'].values()), reverse=True)
 
-    order = ['Power', 'BABIP', "Avoid K's", 'Eye', 'Gap', 'Running', 'Defense']
     rows = []
     for r in recs:
         d = r['recommended_deltas']
-        total_gap = sum(r['weighted_gaps'].values())
         rows.append({
             'Name': r['player'], 'POS': r['pos'], 'Age': r['age'],
-            'Focus': max((s for s in order if s != 'Defense'),
+            'Focus': max((s for s in _BAT_ORDER if s != 'Defense'),
                          key=lambda s: r['weighted_gaps'].get(s, 0)),
-            **{s: _delta_str(d.get(s, 0)) for s in order},
-            'ΣGap': round(total_gap, 2),
+            **{s: _delta_str(d.get(s, 0)) for s in _BAT_ORDER},
+            'ΣGap': round(sum(r['weighted_gaps'].values()), 2),
         })
-    tbl = pd.DataFrame(rows)
     st.caption("Click deltas from neutral (Reset → 50, then apply). Defense pinned "
                f"{GLYPH_PIN}. Sorted by total weighted gap.")
-    st.dataframe(tbl, use_container_width=True, hide_index=True, height=460)
-
-    names = [r['player'] for r in recs]
-    if names:
-        pick = st.selectbox("Inspect a batter", names, key='dev_bat_pick')
-        r = next(x for x in recs if x['player'] == pick)
-        _inspect_card(r, order, cfg, scale=0.5)
+    _inspect_picker(recs, pd.DataFrame(rows), lambda r: _render_batter_card(r, cfg),
+                    'dev_bat', 460,
+                    lambda k: f"{recs[k]['player']} — {recs[k]['pos']}, age {recs[k]['age']}")
 
 
 def _render_pitchers(pits: pd.DataFrame, cfg: dict, pitch_ok: bool):
@@ -606,7 +659,6 @@ def _render_pitchers(pits: pd.DataFrame, cfg: dict, pitch_ok: bool):
     recs = [r for r in recs if r]
     recs.sort(key=lambda r: sum(r['weighted_gaps'].values()), reverse=True)
 
-    main_order = ['Movement', 'Control', 'Stamina']
     rows = []
     for r in recs:
         d = r['main']['recommended_deltas']
@@ -614,47 +666,23 @@ def _render_pitchers(pits: pd.DataFrame, cfg: dict, pitch_ok: bool):
         top_pitch = max(pg, key=pg.get) if pg else '—'
         rows.append({
             'Name': r['player'], 'POS': r['pos'], 'Age': r['age'],
-            **{s: _delta_str(d.get(s, 0)) for s in main_order},
+            **{s: _delta_str(d.get(s, 0)) for s in _PIT_MAIN_ORDER},
             'Top pitch focus': top_pitch if (pg and pg.get(top_pitch, 0) > 0) else '—',
             'ΣGap': round(sum(r['weighted_gaps'].values()), 2),
         })
-    st.caption("Main-pool click deltas from neutral. Pitch pool shown per-player "
-               "below (separate zero-sum budget).")
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, height=420)
+    st.caption("Main-pool click deltas from neutral. Sorted by total weighted gap.")
     if not pitch_ok:
-        st.warning("Pitch pool gated by the column audit — main pool only above.")
-
-    names = [r['player'] for r in recs]
-    if names:
-        pick = st.selectbox("Inspect a pitcher", names, key='dev_pit_pick')
-        r = next(x for x in recs if x['player'] == pick)
-        st.markdown(f"**{r['player']}** — {r['pos']}, age {r['age']}")
-        st.markdown("**Main pool** (Movement / Control / Stamina, budget 150)")
-        md = r['main']['recommended_deltas']; mp = r['main']['recommended_positions']
-        mg = r['main']['weighted_gaps']
-        st.dataframe(pd.DataFrame([{
-            'Slider': s, 'Set to': mp.get(s), 'Δ clicks': _delta_str(md.get(s, 0)),
-            'Weighted gap': round(mg.get(s, 0), 3),
-            '': _gap_glyph(mg.get(s, 0), 0.5),
-        } for s in main_order]), use_container_width=True, hide_index=True)
-        pg = r['pitch_pool']
-        if pg['recommended_positions']:
-            st.markdown(f"**Pitch pool** (per-pitch Stuff, budget "
-                        f"{len(pg['recommended_positions'])}×50)")
-            pgd = pg['recommended_deltas']; pgp = pg['recommended_positions']
-            pgg = pg['weighted_gaps']
-            st.dataframe(pd.DataFrame([{
-                'Pitch': k, 'Set to': pgp[k], 'Δ clicks': _delta_str(pgd.get(k, 0)),
-                'Weighted gap': round(pgg.get(k, 0), 3),
-                '': _gap_glyph(pgg.get(k, 0), 1.0),
-            } for k in pgp]), use_container_width=True, hide_index=True)
-        for n in r['notes']:
-            st.caption("• " + n)
+        st.warning("Pitch pool gated by the column audit — main pool only.")
+    _inspect_picker(recs, pd.DataFrame(rows), lambda r: _render_pitcher_card(r, cfg),
+                    'dev_pit', 420,
+                    lambda k: f"{recs[k]['player']} — {recs[k]['pos']}, age {recs[k]['age']}")
 
 
-def _inspect_card(r: dict, order: list, cfg: dict, scale: float):
+def _render_batter_card(r: dict, cfg: dict):
+    """Full batter card — used by both the modal and the fallback picker."""
     st.markdown(f"**{r['player']}** — {r['pos']}, age {r['age']}"
-                + ("  ·  _veteran: minimal development_" if r['age'] >= cfg['veteran_age'] else ""))
+                + ("  ·  _veteran: minimal development_"
+                   if r['age'] >= cfg['veteran_age'] else ""))
     pos = r['recommended_positions']; d = r['recommended_deltas']; g = r['weighted_gaps']
     st.dataframe(pd.DataFrame([{
         'Slider': s,
@@ -662,8 +690,36 @@ def _inspect_card(r: dict, order: list, cfg: dict, scale: float):
         'Δ clicks': _delta_str(d.get(s, 0)),
         'Weighted gap': round(g.get(s, 0), 3),
         '': (GLYPH_PIN if (s == 'Defense' and r['defense_pinned'])
-             else _gap_glyph(g.get(s, 0), scale)),
-    } for s in order]), use_container_width=True, hide_index=True)
+             else _gap_glyph(g.get(s, 0), 0.5)),
+    } for s in _BAT_ORDER]), use_container_width=True, hide_index=True)
+    for n in r['notes']:
+        st.caption("• " + n)
+
+
+def _render_pitcher_card(r: dict, cfg: dict):
+    """Full pitcher card (main pool + pitch pool) — used by modal and picker."""
+    st.markdown(f"**{r['player']}** — {r['pos']}, age {r['age']}"
+                + ("  ·  _veteran: minimal development_"
+                   if r['age'] >= cfg['veteran_age'] else ""))
+    st.markdown("**Main pool** (Movement / Control / Stamina, budget 150)")
+    md = r['main']['recommended_deltas']; mp = r['main']['recommended_positions']
+    mg = r['main']['weighted_gaps']
+    st.dataframe(pd.DataFrame([{
+        'Slider': s, 'Set to': mp.get(s), 'Δ clicks': _delta_str(md.get(s, 0)),
+        'Weighted gap': round(mg.get(s, 0), 3),
+        '': _gap_glyph(mg.get(s, 0), 0.5),
+    } for s in _PIT_MAIN_ORDER]), use_container_width=True, hide_index=True)
+    pg = r['pitch_pool']
+    if pg['recommended_positions']:
+        st.markdown(f"**Pitch pool** (per-pitch Stuff, budget "
+                    f"{len(pg['recommended_positions'])}×50)")
+        pgd = pg['recommended_deltas']; pgp = pg['recommended_positions']
+        pgg = pg['weighted_gaps']
+        st.dataframe(pd.DataFrame([{
+            'Pitch': k, 'Set to': pgp[k], 'Δ clicks': _delta_str(pgd.get(k, 0)),
+            'Weighted gap': round(pgg.get(k, 0), 3),
+            '': _gap_glyph(pgg.get(k, 0), 1.0),
+        } for k in pgp]), use_container_width=True, hide_index=True)
     for n in r['notes']:
         st.caption("• " + n)
 
