@@ -437,6 +437,24 @@ _V27_SIG = {'CON_1', 'BABIP_1', 'WAR_1'}
 _V26_SIG = {'CON.1', 'BABIP.1', 'WAR.1'}
 
 
+def _saved_roster(league: League) -> pd.DataFrame | None:
+    """Read the saved roster (ORG-filtered) WITHOUT rendering an uploader — for
+    secondary tabs, so only the Slider Optimizer tab owns the file_uploader."""
+    my_team = league.team_config.get('my_team', '')
+    if not my_team:
+        st.warning("Set your team in ⚙️ Settings first.")
+        return None
+    saved = league.get_last_roster()
+    if saved is None or saved.empty:
+        st.info("Upload a roster in the 🎚️ Slider Optimizer tab first — it's "
+                "shared across Development.")
+        return None
+    df = saved.copy()
+    if 'ORG' in df.columns:
+        df = df[df['ORG'].astype(str).str.strip() == my_team].copy()
+    return df
+
+
 def _load_roster(league: League) -> pd.DataFrame | None:
     my_team = league.team_config.get('my_team', '')
     if not my_team:
@@ -518,15 +536,16 @@ def render_development(league: League):
 
     tabs = st.tabs(["🎚️ Slider Optimizer", "📋 Reserve Roster", "📐 Methodology"])
     with tabs[0]:
-        _render_optimizer(league, cfg)
+        # The uploader lives here (rendered once). Saved roster is shared with the
+        # other data tabs via league.get_last_roster().
+        _render_optimizer(league, cfg, _load_roster(league))
     with tabs[1]:
-        _render_reserve(league, cfg)
+        _render_reserve(league, cfg, _saved_roster(league))
     with tabs[2]:
         _render_methodology(cfg)
 
 
-def _render_optimizer(league: League, cfg: dict):
-    df = _load_roster(league)
+def _render_optimizer(league: League, cfg: dict, df):
     if df is None or df.empty:
         return
 
@@ -748,8 +767,7 @@ def _render_pitcher_card(r: dict, cfg: dict):
 _DECISION_GLYPH = {'keep': '✓', 'cut': '✕', 'protected': '🔒'}
 
 
-def _render_reserve(league: League, cfg: dict):
-    df = _load_roster(league)
+def _render_reserve(league: League, cfg: dict, df):
     if df is None or df.empty:
         return
 
