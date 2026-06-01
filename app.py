@@ -12,6 +12,7 @@ import pitching as pit
 import draft as drf
 import development as dev
 import roster_construction_ui as rcu
+import player_lookup as pl
 
 st.set_page_config(
     page_title="OOTP 27 Suite",
@@ -35,7 +36,7 @@ def get_league():
     return st.session_state.get('active_league', None)
 
 st.title("⚾ OOTP 27 Suite")
-st.caption("v1.0 | v14.6 registry locked | F1.1 SP/RP | Full batter F1 reconstruction")
+st.caption("v1.0 | v15.3 registry | F1.1 SP/RP | Full batter F1 reconstruction")
 
 st.sidebar.header("🏟️ League")
 
@@ -109,8 +110,7 @@ elif section == "🌱 Development":
     dev.render_development(league)
 
 elif section == "🧑 Player Lookup":
-    st.header("🧑 Player Lookup")
-    st.info("Coming soon — search any player in an uploaded CSV, full ratings card, F1/F2 scores, trade value.")
+    pl.render_player_lookup(league)
 
 elif section == "⚙️ Settings":
     st.header("⚙️ Settings")
