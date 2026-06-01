@@ -327,71 +327,16 @@ def build_roster_table(df: pd.DataFrame) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════════════════════
 # AUTO-DETECT NEED / SURPLUS
 # ══════════════════════════════════════════════════════════════════════════════
-
-# Need thresholds by mode (best-F1 at position must clear this to NOT be a need)
-NEED_FLOORS = {
-    'Competing':  2.0,
-    'Sustaining': 1.5,
-    'Rebuilding': 1.0,
-}
-
-SURPLUS_QUALITY_FLOOR = 3.0   # players at the position must clear this F1
-SURPLUS_BEST_FLOOR    = 4.0   # AND best at position must clear this
-SURPLUS_MIN_COUNT     = 2
-
-
-def detect_needs_and_surplus(roster_df: pd.DataFrame, mode: str) -> tuple[list[str], list[str]]:
-    """
-    Auto-detect need / surplus positions from the roster table.
-
-    Need: best-F1 player at the position is below mode-specific floor,
-          AND at least one player nominally lists that position
-          (or no one does — also a need).
-
-    Surplus: at least 2 players at the position with F1 >= 3.0,
-             AND best-F1 at that position >= 4.0.
-
-    Returns (needs, surplus) — both sorted alphabetically.
-    """
-    if roster_df.empty:
-        return [], []
-
-    need_floor = NEED_FLOORS.get(mode, NEED_FLOORS['Competing'])
-
-    needs   = []
-    surplus = []
-
-    all_positions = list(BATTER_POSITIONS) + ['SP', 'RP']  # CL folds into RP
-
-    for pos in all_positions:
-        # For pitchers: SP = listed SP; RP = listed RP or CL
-        if pos == 'RP':
-            at_pos = roster_df[roster_df['POS'].isin(['RP', 'CL'])]
-        else:
-            at_pos = roster_df[roster_df['POS'] == pos]
-
-        if at_pos.empty:
-            # No one at this position — it's a need (every position needs a starter)
-            needs.append(pos)
-            continue
-
-        best_f1 = at_pos['F1'].max()
-        quality_count = (at_pos['F1'] >= SURPLUS_QUALITY_FLOOR).sum()
-
-        if best_f1 < need_floor:
-            needs.append(pos)
-
-        # Surplus only applies to position players. On a 25-man you need exactly
-        # 6 SP + 5 RP; "extra" pitchers aren't surplus, they're just the best
-        # available pitching depth. Surplus is about positions where you have
-        # too many quality bodies to play them all.
-        if pos in ('SP', 'RP'):
-            continue
-
-        if quality_count >= SURPLUS_MIN_COUNT and best_f1 >= SURPLUS_BEST_FLOOR:
-            surplus.append(pos)
-
-    return sorted(needs), sorted(surplus)
+#
+# The team-need primitive now lives in roster_construction.py (defined ONCE for
+# Draft / Acquisitions / Development / Roster Construction to consume). My Team is
+# a consumer like the others — re-exported here so existing call sites and any
+# `from my_team import detect_needs_and_surplus` keep working.
+from roster_construction import (   # noqa: F401  (re-export of the shared primitive)
+    detect_needs_and_surplus,
+    NEED_FLOORS, SURPLUS_QUALITY_FLOOR, SURPLUS_BEST_FLOOR, SURPLUS_MIN_COUNT,
+)
+import park_fit as pf   # A22 hitter Park Fit Δ — shared additive lens
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -662,6 +607,37 @@ def render_my_team(league: League):
 
     # Build the unified player table ONCE — slice it for active/reserve views
     full_tbl = build_roster_table(df)
+
+    # Park Fit Δ (A22, hitters) — additive side column from Team Config park
+    # factors. Shown as a full-season (per-650) RATE: the pure profile-fit signal,
+    # independent of how much each player has actually played — so it answers
+    # "who fits the park" (a who-should-play decision), not "who's accumulated the
+    # most park value at current usage". Merged onto full_tbl by Name so
+    # active/reserve slices inherit it. Fails loud: a non-calibrated park leaves
+    # the column off entirely (status surfaced in the roster tab), never a
+    # silent-zero. Never reorders the table (sort stays F1).
+    park_profile = pf.profile_from_team_config(tc or {})
+    _park_status = {'profile': park_profile, 'ok': False, 'name': None, 'confidence': None}
+    _park_entry = pf.match_profile(park_profile)
+    if _park_entry is not None and not full_tbl.empty:
+        ok_cols, missing = pf.park_fit_rate_columns_ok(df)
+        if ok_cols:
+            pf_by_name = {}
+            for rec in df.to_dict('records'):
+                # Hitters only — A23 pitcher NULL (no pitcher Park Fit Δ). Pitcher
+                # rows are left unmapped → NaN → blank cell, never a computed value.
+                if str(rec.get('POS', '')) not in BATTER_POSITIONS:
+                    continue
+                res = pf.park_fit_rate(rec, _park_entry['factors'])
+                if res['ok']:
+                    pf_by_name[str(rec.get('Name', ''))] = res['delta_war']
+            full_tbl['Park Fit Δ'] = full_tbl['Name'].astype(str).map(pf_by_name)
+            _park_status.update({'ok': True, 'name': _park_entry['name'],
+                                 'confidence': _park_entry['confidence']})
+        else:
+            _park_status['missing'] = missing
+    st.session_state['_myteam_park_status'] = _park_status
+
     active_raw, reserve_raw = split_active_reserve(df)
     # For active/reserve sub-tables, build a Name set from each and slice full_tbl
     active_names  = set(active_raw['Name'].astype(str)) if not active_raw.empty else set()
@@ -768,6 +744,7 @@ def _render_roster_tab(active_tbl, reserve_tbl, full_tbl):
         'Name', 'POS', 'Age', 'F1', 'TV', 'Control', 'Svc_Yrs', 'Arb',
         'Salary', 'Yrs_Left',
         'CON', 'POW', 'GAP', 'EYE', 'SPE',
+        'Park Fit Δ',
         'Flex', 'Luck', 'Flags',
     ] if c in bat_tbl.columns]
 
@@ -782,6 +759,32 @@ def _render_roster_tab(active_tbl, reserve_tbl, full_tbl):
         if bat_tbl.empty:
             st.info("No batters in this view.")
         else:
+            _ps = st.session_state.get('_myteam_park_status', {})
+            if _ps.get('ok'):
+                conf = _ps.get('confidence') or {}
+                st.caption(
+                    f"**Park Fit Δ** ({_ps.get('name')}) = the home-park run "
+                    "re-weight this hitter's **profile** earns on top of "
+                    "park-neutral WAR (A22), shown as a **full-season (per-650) "
+                    "rate** — so it reflects park *fit*, not how much he's played. "
+                    "This is the who-should-play signal. **Additive — it never "
+                    "reorders the table** (sort stays F1). SPE "
+                    f"**{conf.get('SPE','?')}**, POW **{conf.get('POW','?')}**, "
+                    "GAP/2B/3B not used. (Pitchers: none — A23 NULL.)"
+                )
+            elif _ps.get('profile') is not None:
+                prof = _ps['profile']
+                if _ps.get('missing'):
+                    st.info("ℹ️ **Park Fit Δ withheld** — export is missing "
+                            + ", ".join(_ps['missing']) + " (no silent-zero).")
+                else:
+                    st.info(
+                        "ℹ️ **Park Fit Δ withheld — park profile not calibrated** "
+                        f"(HR {prof.get('HR','?')} / AVG {prof.get('AVG','?')} / "
+                        f"2B {prof.get('2B','?')} / 3B {prof.get('3B','?')}). A22 "
+                        "covers HR 1.30 / AVG 0.98 / 2B 0.95 / 3B 0.90 only; "
+                        "coefficients aren't extrapolated to other parks."
+                    )
             st.caption(
                 "**Flex** shows positions the player could play besides their listed one — "
                 "`PLUS@X` = projected ZR clears the plus-defender floor at X, "

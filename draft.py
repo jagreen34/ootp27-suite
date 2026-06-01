@@ -75,12 +75,18 @@ from acquisitions import (
     PITCHER_POSITIONS, BATTER_POSITIONS,
     _s,
 )
-from my_team import detect_needs_and_surplus, build_roster_table
+from roster_construction import detect_needs_and_surplus   # shared team-need primitive
+from my_team import build_roster_table
+import park_fit as pf   # A22 hitter Park Fit Δ — shared additive lens
 
 # A6: Fragile → −40% projected value.
 FRAGILE_VALUE_MULT = 0.60
 # A6: never draft RP before Round 4.
 RP_ROUND_FLOOR = 4
+
+# Carries the per-build Park Fit Δ profile resolution from build_board → the board
+# tab caption (so the fail-loud notice for a non-calibrated park surfaces in the UI).
+_DRAFT_PARK_STATUS: dict = {}
 
 # Individual pitch-grade columns in H3 priority order (SI > CH > SL > FB, then
 # the rest for display completeness).
@@ -204,6 +210,17 @@ def _need_set(league: League) -> set:
         return set()
 
 
+def _row_park_fit(r, pos, is_pit, park_entry):
+    """Per-row hitter Park Fit Δ as a full-season (per-650) RATE — the pure
+    profile-fit signal. Returns a float WAR/650 or None (pitcher [A23 NULL] /
+    uncalibrated park / missing POW|SPE). Never reorders the board — purely
+    additive (methodology #6)."""
+    if is_pit or park_entry is None or pos not in BATTER_POSITIONS:
+        return None
+    res = pf.park_fit_rate(dict(r), park_entry['factors'])
+    return res['delta_war'] if res['ok'] else None
+
+
 def build_board(pool_df: pd.DataFrame, league: League, state: dict) -> list[dict]:
     """
     Score every prospect and assemble board rows. Primary sort = career WAR (BPA).
@@ -213,6 +230,20 @@ def build_board(pool_df: pd.DataFrame, league: League, state: dict) -> list[dict
     """
     needs = _need_set(league)
     gate  = state['predraft_gate']
+    # Park Fit Δ (A22, hitters) — additive side lens, computed once per build from
+    # Team Config park factors. Fails loud (status carried out via the closure dict
+    # below) for any non-calibrated park; NEVER reorders the BPA rank. Draftees use
+    # a full-season PA (650) so the column is a per-650 rate comparable across the
+    # board (prospects have no MLB PA yet).
+    park_profile = pf.profile_from_team_config(league.team_config or {})
+    park_entry = pf.match_profile(park_profile)
+    _DRAFT_PARK_STATUS.clear()
+    _DRAFT_PARK_STATUS.update({
+        'ok': park_entry is not None,
+        'profile': park_profile,
+        'name': park_entry['name'] if park_entry else None,
+        'confidence': park_entry['confidence'] if park_entry else None,
+    })
     rows = []
     for _, r in pool_df.iterrows():
         pos = str(r.get('POS', '')).strip()
@@ -267,6 +298,9 @@ def build_board(pool_df: pd.DataFrame, league: League, state: dict) -> list[dict
             # glove WAR + best-fit (batters only; A12 soft-tax, never reorders)
             'glove':     (round(glove_war(r), 2) if not is_pit else None),
             'bestfit':   (best_fit_position(r) if not is_pit else None),
+            # Park Fit Δ (A22, hitters only; A23 pitcher NULL). PA=650 → per-650
+            # rate. None when uncalibrated park / pitcher / missing POW|SPE.
+            'parkfit':   (_row_park_fit(r, pos, is_pit, park_entry)),
         })
 
     rows.sort(key=lambda x: x['career'], reverse=True)
@@ -429,6 +463,7 @@ def _render_board_tab(league, rows, state, pot_active=True, def_active=True,
             'Growth-bet':   (f"{_gb_glyph(gb)} +{gb:.2f}".strip() if (pot_active and gb > 0)
                              else ('+0.00' if pot_active else '—')),
             'Window WAR':   x['window'],
+            'Park Fit Δ':   (f"{x['parkfit']:+.2f}" if x['parkfit'] is not None else ''),
             'Proj TV':      x['tv'],
             'Need':         '✓' if x['need'] else '',
             'Flags':        x['flags'],
@@ -521,6 +556,34 @@ def _render_board_tab(league, rows, state, pot_active=True, def_active=True,
         "**Need ✓** = My Team auto-config (read-only). **Select a row** to open that "
         "prospect's full card with the per-rating haircut."
     )
+
+    # ── Park Fit Δ caption / fail-loud notice (A22 — additive, hitters only) ────
+    _ps = _DRAFT_PARK_STATUS
+    if _ps.get('ok'):
+        conf = _ps.get('confidence') or {}
+        st.caption(
+            f"**Park Fit Δ** ({_ps.get('name')}) = the home-park run re-weight a "
+            "hitter's **profile** earns that the **park-neutral** Career WAR strips "
+            "out (A22) — a **full-season (per-650) fit rate**, so it's pure park "
+            "fit, not playing time. **Additive only: it never reorders the BPA "
+            "rank** (methodology #6); the gap between it and Career WAR is the "
+            f"signal. Confidence — SPE **{conf.get('SPE','?')}** (the locked "
+            f"demotion), POW **{conf.get('POW','?')}** (concave premium), GAP/2B/3B "
+            "not used. Pitchers show blank (A23 NULL — no pitcher park edge). "
+            "Calibrated for THIS park's profile only."
+        )
+    else:
+        prof = _ps.get('profile') or {}
+        st.info(
+            "ℹ️ **Park Fit Δ withheld — no calibrated coefficients for your park "
+            f"profile** (HR {prof.get('HR','?')} / AVG {prof.get('AVG','?')} / "
+            f"2B {prof.get('2B','?')} / 3B {prof.get('3B','?')}). A22 is calibrated "
+            "for HR 1.30 / AVG 0.98 / 2B 0.95 / 3B 0.90 only; the re-weight is "
+            "asymmetric, so the coefficients are **not** extrapolated to other parks "
+            "(a 0.7 park is not the mirror of a 1.30 park). The column is blank "
+            "rather than wrong. Set your park in ⚙️ Settings, or run the OFAT study "
+            "to calibrate this profile."
+        )
 
     # ── Fallback picker (board row-select above is the primary path) ─────────────
     _render_inspect(visible, pot_active)

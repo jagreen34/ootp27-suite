@@ -11,6 +11,7 @@ import lineups as ln
 import pitching as pit
 import draft as drf
 import development as dev
+import roster_construction_ui as rcu
 
 st.set_page_config(
     page_title="OOTP 27 Suite",
@@ -24,6 +25,7 @@ SECTIONS = [
     "🥎 Pitching",
     "🔄 Acquisitions",
     "📝 Draft",
+    "🧱 Roster Construction",
     "🌱 Development",
     "🧑 Player Lookup",
     "⚙️ Settings",
@@ -99,6 +101,9 @@ elif section == "🥎 Pitching":
 
 elif section == "📝 Draft":
     drf.render_draft(league)
+
+elif section == "🧱 Roster Construction":
+    rcu.render_roster_construction(league)
 
 elif section == "🌱 Development":
     dev.render_development(league)

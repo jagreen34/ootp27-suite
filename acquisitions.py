@@ -2236,6 +2236,12 @@ def evaluate_league(df: pd.DataFrame, tc: dict,
     ].copy()  # .copy() prevents fragmentation warning
 
     results = []
+    # Park Fit Δ (A22, hitters) — additive side column from Team Config park
+    # factors, resolved once. Fails loud: a non-calibrated park yields _park_entry
+    # None → blank column (status attached to the returned frame). Never reorders.
+    import park_fit as _pf
+    _park_profile = _pf.profile_from_team_config(tc or {})
+    _park_entry = _pf.match_profile(_park_profile)
     for _, row in candidates.iterrows():
         r = row.to_dict()
         pos    = str(r.get('POS', ''))
@@ -2295,6 +2301,14 @@ def evaluate_league(df: pd.DataFrame, tc: dict,
         # Slot
         slot = roster_slot_tag(r, tc)
 
+        # Park Fit Δ — hitters only (A23 pitcher NULL); None if uncalibrated park
+        # or missing POW/SPE. Shown as a full-season (per-650) RATE: pure profile
+        # fit, not weighted by the target's current playing time.
+        _pfd = None
+        if _park_entry is not None and pos in BATTER_POSITIONS:
+            _res = _pf.park_fit_rate(r, _park_entry['factors'])
+            _pfd = _res['delta_war'] if _res['ok'] else None
+
         results.append({
             'Name':        r.get('Name', ''),
             'TM':          r.get('TM', ''),
@@ -2313,6 +2327,7 @@ def evaluate_league(df: pd.DataFrame, tc: dict,
             'Slot':        slot,
             'Luck':        luck,
             'Flex':        flex,
+            'Park Fit Δ':  _pfd,
             'CNT_eff':     cnt_eff,
             'MIN_eff':     min_eff,
             'STU':         int(_s(r.get('STU', 0))) if pos in PITCHER_POSITIONS else None,
@@ -2334,6 +2349,15 @@ def evaluate_league(df: pd.DataFrame, tc: dict,
     out = pd.DataFrame(results)
     if out.empty:
         return out
+
+    # Stash the Park Fit Δ resolution on the frame so the renderer can caption it
+    # (fail-loud when the park isn't calibrated). attrs survives normal slicing.
+    out.attrs['park_fit'] = {
+        'ok': _park_entry is not None,
+        'profile': _park_profile,
+        'name': _park_entry['name'] if _park_entry else None,
+        'confidence': _park_entry['confidence'] if _park_entry else None,
+    }
 
     # Sort by Score descending by default
     out = out.sort_values('Score', ascending=False).reset_index(drop=True)
@@ -2614,6 +2638,7 @@ def render_mode1(league: League):
     bat_display_cols = [c for c in [
         'Name', 'TM', 'POS', 'Age', 'F1', 'TV', 'Control', 'Svc_Yrs', 'Arb',
         'Salary', 'Yrs_Left', 'Market', 'Fit', 'Score', 'Slot', 'Luck', 'Flex',
+        'Park Fit Δ',
         'CON', 'POW', 'EYE', 'GAP', 'SPE', 'PRONE', 'ON_WAIVERS', 'IS_DFA'
     ] if c in bat_results.columns]
 
@@ -2628,6 +2653,26 @@ def render_mode1(league: League):
         if bat_results.empty:
             st.info("No batter candidates match current filters.")
         else:
+            _pfs = results.attrs.get('park_fit', {}) if hasattr(results, 'attrs') else {}
+            if _pfs.get('ok'):
+                conf = _pfs.get('confidence') or {}
+                st.caption(
+                    f"**Park Fit Δ** ({_pfs.get('name')}) = home-park run re-weight "
+                    "a hitter's **profile** earns on top of park-neutral WAR (A22), "
+                    "as a **full-season (per-650) rate** — park *fit*, not weighted "
+                    "by his current playing time. **Additive — never reorders the "
+                    "table** (sort stays Score). "
+                    f"SPE **{conf.get('SPE','?')}**, POW **{conf.get('POW','?')}**; "
+                    "GAP/2B/3B unused. (Pitchers: none — A23 NULL.)"
+                )
+            elif _pfs.get('profile') is not None:
+                prof = _pfs['profile']
+                st.info(
+                    "ℹ️ **Park Fit Δ withheld — park not calibrated** "
+                    f"(HR {prof.get('HR','?')} / AVG {prof.get('AVG','?')} / "
+                    f"2B {prof.get('2B','?')} / 3B {prof.get('3B','?')}). A22 covers "
+                    "HR 1.30 / AVG 0.98 / 2B 0.95 / 3B 0.90 only; not extrapolated."
+                )
             st.caption(
                 "**Market** = likelihood their team trades them (0-10). "
                 "**Fit** = match to your team's needs (0-10). "
