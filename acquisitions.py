@@ -95,7 +95,19 @@ PLAYER_RENAMES = {
     'PIT':          'PIT_COUNT',     # pitch count column is 'PIT'
     'PT':           'PIT_PT',        # pitcher type
     'VT':           'VELO_P',        # velocity potential
-    # Pitcher v-splits: 'STU vL', 'MOV vL' etc (space)
+
+    # ── OOTP 26 compatibility aliases ─────────────────────────────────────────
+    # The OOTP 26 export differs from 27 on a handful of names. Adding them here
+    # lets the same code score either export. (A file has only one of each pair,
+    # so there's no rename collision.) OOTP 26 has NO active flag (ACT) and no
+    # ML service/contract-years columns, so promote/demote and control-window
+    # are unavailable on 26 — the board falls back to whole-roster keep/cut.
+    'CON.1':        'PIT_CON',       # 26 pitcher control (dot, not underscore)
+    'HRR':          'HRA',           # 26 HR-rating label
+    'HRR P':        'HRA_P',
+    'CON P.1':      'PIT_CON_P',     # 26 pitcher control potential
+    'EXP':          'ML_YRS',        # 26 'Experience' (yrs) — service-time proxy
+    # Batter v-splits: export uses 'CON vL', 'GAP vL' etc (space, no dot)
     'STU vL':       'STU_vL',
     'STU vR':       'STU_vR',
     'MOV vL':       'MOV_vL',

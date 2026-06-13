@@ -434,6 +434,11 @@ def allocate_roster(roster_rows: list, growth_by_name: dict, mode: str,
             'type': classify(val, CLASS_DEFAULTS),
         })
 
+    # Does the export distinguish active vs reserve at all? OOTP 26 has no ACT
+    # column, so every flag is False — in that case PROMOTE is meaningless (we
+    # can't know who's already up), and the top-N are labeled KEEP, not PROMOTE.
+    has_active_flags = any(bool(v) for v in active_flag_by_name.values())
+
     if not recs:
         return {'records': [], 'active_cap': active_cap, 'n_promote': 0,
                 'n_keep': 0, 'n_trade': 0, 'n_cut': 0, 'n_hold': 0,
@@ -506,7 +511,7 @@ def allocate_roster(roster_rows: list, growth_by_name: dict, mode: str,
 
         if is_prospect_hold:
             r['decision'] = 'hold-down'
-        elif r['in_optimal_active'] and not r['is_active']:
+        elif has_active_flags and r['in_optimal_active'] and not r['is_active']:
             r['decision'] = 'promote'
         elif is_aging_vet_sell:
             aging_vets.append(r)               # candidate — capped below
