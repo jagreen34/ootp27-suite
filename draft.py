@@ -78,6 +78,7 @@ from acquisitions import (
 from roster_construction import detect_needs_and_surplus   # shared team-need primitive
 from my_team import build_roster_table
 import park_fit as pf   # A22 hitter Park Fit Δ — shared additive lens
+import edge_confidence as ec   # Edge Stability + Total Value (opt-in composite lens)
 
 # A6: Fragile → −40% projected value.
 FRAGILE_VALUE_MULT = 0.60
@@ -107,16 +108,20 @@ def _load_draft_state(league: League) -> dict:
         'tier_bands':    {**DRAFT_TIER_DEFAULTS, **state.get('tier_bands', {})},
         'predraft_gate': {**PREDRAFT_PITCH_GATE_DEFAULTS, **state.get('predraft_gate', {})},
         'current_round': int(state.get('current_round', 1)),
+        'conf_floor':    float(state.get('conf_floor', 0.85)),
+        'tval_base':     state.get('tval_base', 'disc'),
     }
 
 
 def _save_draft_state(league: League, tier_bands=None, predraft_gate=None,
-                      current_round=None):
+                      current_round=None, conf_floor=None, tval_base=None):
     cur = _load_draft_state(league)
     payload = {
         'tier_bands':    tier_bands    if tier_bands    is not None else cur['tier_bands'],
         'predraft_gate': predraft_gate if predraft_gate is not None else cur['predraft_gate'],
         'current_round': current_round if current_round is not None else cur['current_round'],
+        'conf_floor':    conf_floor    if conf_floor    is not None else cur['conf_floor'],
+        'tval_base':     tval_base     if tval_base     is not None else cur['tval_base'],
     }
     league.save_config({'draft_state': payload})
 
@@ -270,6 +275,14 @@ def build_board(pool_df: pd.DataFrame, league: League, state: dict) -> list[dict
         if is_pit and thin_out_pitch(r, gate): flags.append('THIN-OUT-PITCH')
         if rp_ceiling:            flags.append('RP-CEILING')
 
+        # Edge Stability + Total Value (opt-in composite). glove/parkfit pulled into
+        # locals so the composite reuses the exact additive lenses the board shows.
+        glove_local   = (round(glove_war(r), 2) if not is_pit else None)   # A12, batters only
+        parkfit_local = _row_park_fit(r, pos, is_pit, park_entry)           # A22, hitters only
+        eb = ec.annotate(r, is_pit=is_pit, career=career, disc=disc,
+                         glove=glove_local, parkfit=parkfit_local,
+                         conf_floor=state['conf_floor'], base=state['tval_base'])
+
         rows.append({
             'row':       r,
             'name':      str(r.get('Name', '')),
@@ -296,11 +309,20 @@ def build_board(pool_df: pd.DataFrame, league: League, state: dict) -> list[dict
             'velo':      int(_s(r.get('velo_mid', 0))) if is_pit else None,
             'def_sum':   defense_summary(r) if not is_pit else None,
             # glove WAR + best-fit (batters only; A12 soft-tax, never reorders)
-            'glove':     (round(glove_war(r), 2) if not is_pit else None),
+            'glove':     glove_local,
             'bestfit':   (best_fit_position(r) if not is_pit else None),
             # Park Fit Δ (A22, hitters only; A23 pitcher NULL). PA=650 → per-650
             # rate. None when uncalibrated park / pitcher / missing POW|SPE.
-            'parkfit':   (_row_park_fit(r, pos, is_pit, park_entry)),
+            'parkfit':   parkfit_local,
+            # ── Edge Stability + Total Value (opt-in composite; never reorders BPA) ──
+            'edge':         eb['edge'],
+            'edge_ok':      eb['edge_ok'],
+            'edge_reason':  eb['edge_reason'],
+            'edge_glyph':   eb['edge_glyph'],
+            'edge_drivers': eb['edge_drivers'],
+            'grade_flags':  eb['grade_flags'],
+            'conf':         eb['conf'],
+            'tval':         eb['tval'],
         })
 
     rows.sort(key=lambda x: x['career'], reverse=True)
@@ -411,13 +433,21 @@ def _render_board_tab(league, rows, state, pot_active=True, def_active=True,
 
     leg = " · ".join(f"{DRAFT_TIER_ICONS[k]} {DRAFT_TIER_LABELS[k]}"
                      for k in ('elite', 'solid', 'flier', 'filler'))
-    st.caption(f"**Tiers:** {leg}  ·  ranked by **Career WAR** (BPA)")
+    st.caption(f"**Tiers:** {leg}  ·  ranked by your selected **Sort** (Career WAR / BPA by default)")
 
     show_skipped = st.checkbox("Show auto-skipped (Unmotivated/Disruptive)", value=False,
                                key='draft_show_skip')
+    sort_mode = st.radio(
+        "Sort", ["Career WAR (BPA — default)", "Total Value (glove + park + confidence)"],
+        horizontal=True, key='draft_sort_mode',
+        help="BPA never reorders on the side lenses (A22/A12 locks). Total Value is "
+             "the opt-in composite — it DOES reorder; the sub-columns show why.")
+    use_tval = sort_mode.startswith("Total")
     early_round = int(rnd) < RP_ROUND_FLOOR
 
     visible = [x for x in rows if (show_skipped or not x['skip'])]
+    if use_tval:
+        visible = sorted(visible, key=lambda x: x['tval'], reverse=True)
     # Colorblind-safe glyph for a notable growth bet (▲ scales with the gap).
     def _gb_glyph(gap):
         if not pot_active or gap < 0.3: return ''
@@ -449,7 +479,8 @@ def _render_board_tab(league, rows, state, pot_active=True, def_active=True,
         rp_warn = ' ⛔R4' if (x['rp_ceiling'] and early_round) else ''
         gb = x['growth_bet']
         table.append({
-            ' ':            DRAFT_TIER_ICONS[x['tier']],
+            ' ':            DRAFT_TIER_ICONS[draft_tier(x['tval'], state['tier_bands'])
+                                             if use_tval else x['tier']],
             'Name':         x['name'] + (' 🚫' if x['skip'] else ''),
             'POS':          x['pos'] + rp_warn,
             'B/T':          x['bt'],
@@ -460,6 +491,8 @@ def _render_board_tab(league, rows, state, pot_active=True, def_active=True,
             'Fit':          _fit_cell(x),
             'Career WAR':   x['career'],
             'Disc WAR':     (x['disc'] if pot_active else x['career']),
+            'Total':        x['tval'],
+            'Conf':         (f"{x['edge_glyph']} {x['edge']:.2f}" if x['edge_ok'] else '⚠'),
             'Growth-bet':   (f"{_gb_glyph(gb)} +{gb:.2f}".strip() if (pot_active and gb > 0)
                              else ('+0.00' if pot_active else '—')),
             'Window WAR':   x['window'],
@@ -623,16 +656,29 @@ def _render_board_tab(league, rows, state, pot_active=True, def_active=True,
                                   min_value=20, max_value=80, key='dg_sec')
         gcnt = gc[2].number_input("Gate: # secondaries", value=int(gate['secondary_count']),
                                   min_value=0, max_value=4, key='dg_cnt')
+        st.markdown("**Total Value composite** (opt-in sort — never changes the BPA default):")
+        vc = st.columns(2)
+        cfloor = vc[0].slider("Confidence floor", 0.50, 1.00,
+                              float(state['conf_floor']), 0.01, key='dt_cfloor',
+                              help="Worst-case Total-Value haircut for a fully fragile "
+                                   "edge. 0.85 = max −15%. Lower bites harder.")
+        tbase = vc[1].radio("Total Value base", ["disc", "career"],
+                            index=0 if state['tval_base'] == 'disc' else 1,
+                            horizontal=True, key='dt_tbase',
+                            help="disc = growth-discounted (realistic draft value); "
+                                 "career = no-growth floor.")
         b1, b2 = st.columns(2)
         if b1.button("Save", key='dt_save'):
             _save_draft_state(league,
                 tier_bands={'elite': elite, 'solid': solid, 'flier': flier},
                 predraft_gate={'top_min': int(gtop), 'secondary_min': int(gsec),
-                               'secondary_count': int(gcnt)})
+                               'secondary_count': int(gcnt)},
+                conf_floor=float(cfloor), tval_base=tbase)
             st.success("Saved."); st.rerun()
         if b2.button("Reset", key='dt_reset'):
             _save_draft_state(league, tier_bands=dict(DRAFT_TIER_DEFAULTS),
-                              predraft_gate=dict(PREDRAFT_PITCH_GATE_DEFAULTS))
+                              predraft_gate=dict(PREDRAFT_PITCH_GATE_DEFAULTS),
+                              conf_floor=0.85, tval_base='disc')
             st.success("Reset."); st.rerun()
 
 
@@ -685,6 +731,22 @@ def _render_prospect_card(x):
     # ── 1. Scouting card ────────────────────────────────────────────────
     st.markdown(f"**{x['name'] or '(unnamed)'}** · {x['pos']} · age {x['age']} · "
                 f"bats **{bats_hand(r)}** / throws **{throws_hand(r)}**")
+    # Edge stability + Total Value decomposition (the "why" behind the composite).
+    if x.get('edge_ok'):
+        parts = [f"disc {x['disc']:.2f}"]
+        if x.get('glove') is not None:
+            parts.append(f"glove {x['glove']:+.2f}")
+        if isinstance(x.get('parkfit'), (int, float)):
+            parts.append(f"park {x['parkfit']:+.2f}")
+        st.caption(f"**Edge {x['edge_glyph']} {x['edge']:.2f}** · conf ×{x['conf']:.2f} · "
+                   f"**Total {x['tval']:.2f}** (= {' + '.join(parts)}, ×conf)")
+        for d in x.get('edge_drivers', []):
+            st.caption(f"• fragile input: {d['rating']} = {d['share'] * 100:.0f}% of tool "
+                       f"value — {d['why']}")
+        for g in x.get('grade_flags', []):
+            st.caption(f"• noisy grade: {g['pitch']} {g['grade']} — {g['why']}")
+    elif x.get('edge_reason'):
+        st.caption(f"⚠ edge stability unavailable: {x['edge_reason']}")
     if x['is_pit']:
         ars = arsenal_detail(r)
         line = (f"Stamina **{x['stm']}** · mid-velo **{x['velo']}** · "

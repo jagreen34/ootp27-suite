@@ -202,16 +202,17 @@ def total_value(career, disc, glove, parkfit, conf, *, is_pit: bool,
 # COLORBLIND-SAFE STABILITY GLYPH  (diamond fill-ramp; shape only, no color)
 # ══════════════════════════════════════════════════════════════════════════════
 def stability_glyph(stability) -> str:
-    """◆ solid = stable edge · ◈ mixed · ◇ hollow = fragile. Shape/fill only
-    (colorblind-safe, house style). '' when stability is None (fail-loud upstream).
-    Pair with the numeric in the UI for precision (e.g. '◆ .96')."""
+    """● solid = stable edge · ◐ mixed · ○ hollow = fragile. Fill-ramp CIRCLES —
+    deliberately distinct from the board's Glove ◆/◇ column so the two don't read
+    as the same signal. Shape/fill only (colorblind-safe, house style). '' when
+    stability is None (fail-loud upstream). Pair with the numeric for precision."""
     if stability is None:
         return ''
     if stability >= 0.90:
-        return '◆'
+        return '●'
     if stability >= 0.75:
-        return '◈'
-    return '◇'
+        return '◐'
+    return '○'
 
 
 # ── one-call convenience for build_board (keeps the draft.py hook to ~3 lines) ─
