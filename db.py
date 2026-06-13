@@ -50,6 +50,9 @@ TEAM_CONFIG_DEFAULTS = {
     # Financial
     'payroll_current':   0,           # current committed payroll (int, dollars)
     'tax_threshold':     0,           # soft cap threshold (120% avg payroll)
+    'budget':            0,           # team budget ceiling (int, dollars) — the
+                                      # active-roster salary cap for keep/cut. 0 =
+                                      # unset (salary treated as a soft tiebreaker).
 
     # Park factors — max HR 1.300, min .700, no more than .300 diff LH/RH
     'park_hr_l':         1.000,
@@ -97,6 +100,24 @@ def _s(v, d=0.0):
         return d
 
 
+def service_years(ml_yrs: float, ml_days: float) -> float:
+    """
+    Accrued ML service years — robust to export quirks.
+
+    OOTP exports two service fields: MLY (whole service years) and MLD (ML days).
+    In some exports MLD is cumulative total days (~180/yr), NOT days-within-the-
+    current-year — so MLY + MLD/76 double-counts massively (a 15-yr vet reads ~49).
+    MLY is the authoritative whole-year count. We only use MLD as the sub-year
+    fraction when MLY is 0 (true rookies, where MLD is on the 76-day partial scale).
+    """
+    y = max(0.0, float(ml_yrs or 0))
+    d = max(0.0, float(ml_days or 0))
+    if y >= 1.0:
+        return round(y, 1)
+    # rookie / partial: MLD on the 76-day = 1 service year scale, capped under 1
+    return round(min(0.99, d / 76.0), 2)
+
+
 def compute_control_window(years_left: float, ml_yrs: float, ml_days: float) -> float:
     """
     Effective years of team control — lesser of contract years remaining
@@ -105,8 +126,8 @@ def compute_control_window(years_left: float, ml_yrs: float, ml_days: float) -> 
     FA eligibility: 6 service years (76 days = 1 service year per AC rules).
     Returns a float rounded to 1 decimal.
     """
-    service_years_accrued = ml_yrs + (ml_days / 76.0)
-    fa_years_remaining    = max(0.0, 6.0 - service_years_accrued)
+    service = service_years(ml_yrs, ml_days)
+    fa_years_remaining = max(0.0, 6.0 - service)
     return round(min(float(years_left), fa_years_remaining), 1)
 
 
@@ -117,7 +138,7 @@ def compute_arb_status(ml_yrs: float, ml_days: float) -> str:
       'Arb'       — 3-5 service years (arbitration eligible)
       'FA-Elig'   — 6+ service years
     """
-    service = ml_yrs + (ml_days / 76.0)
+    service = service_years(ml_yrs, ml_days)
     if service >= 6.0:
         return 'FA-Elig'
     elif service >= 3.0:

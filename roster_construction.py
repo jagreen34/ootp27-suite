@@ -24,7 +24,7 @@ a thin compatibility shim re-exporting from here.
 
 import pandas as pd
 
-from db import compute_control_window, compute_arb_status
+from db import compute_control_window, compute_arb_status, service_years as _svc_years
 from acquisitions import (
     _s, batter_f1, pitcher_f1, trade_value, f2_war, window_war,
     BATTER_POSITIONS, PITCHER_POSITIONS,
@@ -41,10 +41,23 @@ from acquisitions import (
 #          RP, so "extra" pitching is depth, not surplus (CL folds into RP).
 
 # Best-F1 at a position must clear this floor to NOT be flagged a need.
+# BATTERS are scored on F1 (rating-based present WAR — reliable without stats).
 NEED_FLOORS = {
     'Competing':  2.0,
     'Sustaining': 1.5,
     'Rebuilding': 1.0,
+}
+
+# PITCHERS are scored on F2 (rating-based projected WAR), NOT F1: pitcher F1 is
+# innings-driven and collapses negative at 0 IP (fresh-season / bench arms), which
+# would falsely flag every pitching slot as a need. F2 is stats-independent and
+# clamped to [0, 9]. Floors are set on the F2 quality scale (scrub 0 · avg ~1.5 ·
+# solid ~2.2 · frontline ~3.2 · ace ~3.8) so "is SP/RP a need" asks a real
+# arm-quality question regardless of how many innings have been thrown.
+PITCHER_NEED_FLOORS = {
+    'Competing':  2.2,   # below a "solid" arm
+    'Sustaining': 1.8,
+    'Rebuilding': 1.5,   # below ~average
 }
 
 SURPLUS_QUALITY_FLOOR = 3.0   # bodies at the position must clear this F1
@@ -67,6 +80,8 @@ def detect_needs_and_surplus(roster_table: 'pd.DataFrame',
         return [], []
 
     need_floor = NEED_FLOORS.get(mode, NEED_FLOORS['Competing'])
+    pit_floor = PITCHER_NEED_FLOORS.get(mode, PITCHER_NEED_FLOORS['Competing'])
+    has_f2 = 'F2' in roster_table.columns
     needs, surplus = [], []
 
     all_positions = list(BATTER_POSITIONS) + ['SP', 'RP']  # CL folds into RP
@@ -81,15 +96,25 @@ def detect_needs_and_surplus(roster_table: 'pd.DataFrame',
             needs.append(pos)            # nobody here → a need
             continue
 
-        best_f1 = at_pos['F1'].max()
-        quality_count = (at_pos['F1'] >= SURPLUS_QUALITY_FLOOR).sum()
+        is_pitcher = pos in ('SP', 'RP')
 
-        if best_f1 < need_floor:
+        # Pitchers: score on F2 (rating-based, IP-independent) against the pitcher
+        # floor. Position players: score on F1 against the batter floor. Fall back
+        # to F1 for pitchers only if the table predates the F2 column.
+        if is_pitcher and has_f2:
+            best = at_pos['F2'].max()
+            floor = pit_floor
+        else:
+            best = at_pos['F1'].max()
+            floor = need_floor
+
+        if best < floor:
             needs.append(pos)
 
-        if pos in ('SP', 'RP'):          # pitching depth ≠ surplus
+        if is_pitcher:                   # pitching depth ≠ surplus
             continue
-        if quality_count >= SURPLUS_MIN_COUNT and best_f1 >= SURPLUS_BEST_FLOOR:
+        quality_count = (at_pos['F1'] >= SURPLUS_QUALITY_FLOOR).sum()
+        if quality_count >= SURPLUS_MIN_COUNT and at_pos['F1'].max() >= SURPLUS_BEST_FLOOR:
             surplus.append(pos)
 
     return sorted(needs), sorted(surplus)
@@ -151,22 +176,34 @@ RESERVE_DEFAULTS = {
     'mode_weights':       None,        # None → use MODE_WEIGHTS[mode]
     'class':              dict(CLASS_DEFAULTS),
     'current_draft_year': None,        # None → infer max(Draft) on the roster
+    'max_proactive_trades': 4,         # rolling cap on rebuild aging-vet sells
 }
 
 # Premium up-the-middle positions where losing all reserve cover is a real risk.
 PREMIUM_BACKUP_POS = ['C', 'SS', 'CF', '2B']
 
 
+# Minimum innings for the IP-driven pitcher F1 to be meaningful. Below this the
+# present-WAR formula's large negative intercept dominates (no innings to offset
+# it) and reads spuriously negative, so we fall back to the rating-based estimate.
+_MIN_IP_FOR_F1 = 20.0
+
+
 def _present_f1(row, pos: str) -> float:
     if pos in PITCHER_POSITIONS:
-        return pitcher_f1(row)
+        ip = _s(row.get('IP', 0))
+        if ip >= _MIN_IP_FOR_F1:
+            return pitcher_f1(row)        # real present WAR from accumulated innings
+        # No meaningful innings → IP-based F1 is unreliable (negative). The
+        # rating-based projection is the best available present-ability estimate.
+        return f2_war(row)
     if pos in BATTER_POSITIONS:
         return batter_f1(row)
     return 0.0
 
 
 def _service_years(row) -> float:
-    return _s(row.get('ML_YRS', 0)) + _s(row.get('ML_DAYS', 0)) / 76.0
+    return _svc_years(_s(row.get('ML_YRS', 0)), _s(row.get('ML_DAYS', 0)))
 
 
 def player_value(row, growth_total: float) -> dict:
@@ -307,3 +344,233 @@ def allocate_reserve(reserve_rows: list, growth_by_name: dict, mode: str,
     return {'records': recs, 'reserve_cap': cap, 'protected': protected,
             'n_keep': n_keep, 'n_cut': n_cut, 'draft_year': draft_year,
             'insurance_flags': flags}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WHOLE-ROSTER KEEP / PROMOTE / TRADE / CUT  (the decision board)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# The reserve allocator above ranks ONLY the reserve pool — it takes your current
+# active/reserve split as fixed. That answers "trim the reserve tail" but NOT the
+# decisions Jeff actually makes: who to PROMOTE (reserve → active) and who to CUT
+# when the roster squeezes (Opening Day cut-down, since draftees are held until the
+# next April). This allocator ranks the WHOLE roster and lets the cap line fall
+# where it falls — active/reserve is an OUTPUT (a column), never the filter.
+#
+# Verdicts:
+#   PROMOTE    reserve player who'd crack the active top-N on present WAR (F1)
+#   HOLD-DOWN  rebuild-mode advisory: a promote-worthy young prospect under the
+#              service clock — promoting starts his FA countdown; consider banking
+#              the control year. (Advisory only — Jeff decides.)
+#   KEEP       above the keep line; stays
+#   TRADE      below the keep line but cheap + controllable + real WAR → sell, don't
+#              release (chip value)
+#   CUT        below the keep line, low trade value → release for nothing
+#
+# Salary: the league budget is a SOFT ceiling. Under budget → salary is only a
+# tiebreaker (younger + cheaper wins between near-equals). Over budget → expensive,
+# low-WAR players are surfaced as cut/trade priorities to get back under.
+
+# A reserve player promotes if his present F1 would place him in the active top-N.
+# HOLD-DOWN advisory: rebuild + under this service-year line + real future value.
+HOLD_DOWN_SERVICE_MAX = 1.0      # < 1 full ML service year (pre-clock-burn)
+HOLD_DOWN_FUTURE_MIN  = 1.5      # capturable future WAR worth protecting a year for
+TRADE_CHIP_MIN        = 8.0      # trade value at/above this = a real chip (sell)
+TRADE_NOW_MIN         = 0.5      # ...with at least this present WAR to be sellable
+
+# Rebuild aging-vet sell rule: a genuinely useful player who is old and near the
+# end of team control is win-now value a rebuild doesn't need — sell him for
+# prospects rather than hold (KEEP) or release (CUT).
+REBUILD_VET_AGE_MIN     = 30     # "aging"
+REBUILD_VET_CONTROL_MAX = 2.0    # "short control" — ≤2 yrs to FA
+REBUILD_VET_NOW_MIN     = 1.5    # "genuinely useful" present WAR worth selling
+
+
+def _eff_active_cap(phase_cfg: dict) -> int | None:
+    """Active cap for the phase (the cut-down target). None → uncapped phase."""
+    return phase_cfg.get('active')
+
+
+def allocate_roster(roster_rows: list, growth_by_name: dict, mode: str,
+                    phase: str, active_flag_by_name: dict,
+                    budget: float = 0.0, payroll_by_name: dict = None,
+                    max_proactive_trades: int = 4) -> dict:
+    """
+    Rank the WHOLE roster and assign keep/promote/trade/cut/hold-down.
+
+    roster_rows        — list of row dicts (the entire team: active + reserve).
+    growth_by_name     — {name: Layer-1 ΣweightedGap} (future-upside, consumed).
+    mode               — 'Rebuilding' | 'Competing' | 'Sustaining'.
+    phase              — a key of PHASE_PRESETS (sets the active cap = cut target).
+    active_flag_by_name— {name: bool} current active status (shown, not used as a
+                         filter). Drives PROMOTE/DEMOTE labelling vs. the optimal 25.
+    budget             — team salary ceiling (0 = unset → salary is soft tiebreaker).
+    payroll_by_name    — {name: salary} for the budget check.
+    max_proactive_trades — cap on PROACTIVE rebuild aging-vet sells (you can only
+                         absorb so many returns per window). Ranked by trade value,
+                         best first; vets beyond the cap revert to KEEP. Rolling:
+                         re-run after a trade and the next vet surfaces. Does NOT
+                         limit FORCED over-cap moves (those clear seats, not add).
+
+    Returns {records[], active_cap, n_promote, n_keep, n_trade, n_cut, n_hold,
+             over_budget, payroll, budget, mode, phase}.
+    """
+    payroll_by_name = payroll_by_name or {}
+    weights = MODE_WEIGHTS.get(mode, MODE_WEIGHTS['Sustaining'])
+    phase_cfg = PHASE_PRESETS.get(phase, PHASE_PRESETS['Opening Day'])
+    active_cap = _eff_active_cap(phase_cfg)
+
+    # ── Build value records for the whole roster ──────────────────────────────
+    recs = []
+    for row in roster_rows:
+        name = str(row.get('Name', ''))
+        pos = str(row.get('POS', ''))
+        if pos not in BATTER_POSITIONS and pos not in PITCHER_POSITIONS:
+            continue
+        val = player_value(row, growth_by_name.get(name, 0.0))
+        recs.append({
+            'name': name, **val,
+            'is_active': bool(active_flag_by_name.get(name, False)),
+            'salary': int(payroll_by_name.get(name, _s(row.get('SALARY', 0)))),
+            'type': classify(val, CLASS_DEFAULTS),
+        })
+
+    if not recs:
+        return {'records': [], 'active_cap': active_cap, 'n_promote': 0,
+                'n_keep': 0, 'n_trade': 0, 'n_cut': 0, 'n_hold': 0,
+                'over_budget': False, 'payroll': 0, 'budget': int(budget),
+                'mode': mode, 'phase': phase}
+
+    # ── Keep-value: mode-tilted now/later/chip, normalized across the roster ──
+    nm = {k: _minmax([r[k] for r in recs]) for k in ('now', 'later', 'chip')}
+    for r in recs:
+        norm = {k: (r[k] - nm[k]['lo']) / nm[k]['span'] for k in nm}
+        base = (weights['now'] * norm['now']
+                + weights['later'] * norm['later']
+                + weights['chip'] * norm['chip'])
+        r['keep_score'] = round(base, 4)
+
+    # ── Tiebreaker: younger + cheaper nudges keep-value up (dollar-per-WAR) ────
+    # Small additive nudges so they only separate near-equals, never override WAR.
+    ages = [r['age'] for r in recs]
+    sals = [r['salary'] for r in recs]
+    amm = _minmax(ages); smm = _minmax(sals)
+    for r in recs:
+        youth = 1.0 - (r['age'] - amm['lo']) / amm['span']        # 1=youngest
+        cheap = 1.0 - (r['salary'] - smm['lo']) / smm['span']     # 1=cheapest
+        r['tiebreak'] = round(0.05 * youth + 0.05 * cheap, 4)
+        r['keep_score'] = round(r['keep_score'] + r['tiebreak'], 4)
+
+    # ── PROMOTE: rank everyone by PRESENT F1; the active-cap top-N is the
+    #    optimal active roster. A reserve player in that top-N is a promote;
+    #    an active player outside it is a demote candidate. ────────────────────
+    by_now = sorted(recs, key=lambda r: r['now'], reverse=True)
+    optimal_active = set()
+    if active_cap is not None:
+        optimal_active = {r['name'] for r in by_now[:active_cap]}
+    for r in recs:
+        r['in_optimal_active'] = r['name'] in optimal_active
+
+    # ── OPTION A keep/cut ──────────────────────────────────────────────────────
+    # Two independent questions:
+    #   1. Who PLAYS today  → the present-WAR top-N (in_optimal_active, above).
+    #   2. Who we KEEP in the org → ranked by the MODE-TILTED keep_score.
+    # CUT is FORCED-ONLY: nobody is released unless the roster is over the cap.
+    # When forced, the players cut are the lowest by OVERALL PROJECTION (now+later
+    # blend, like the draft board) — raw young fliers are held unless they're the
+    # weakest bodies on an over-cap roster.
+    recs.sort(key=lambda r: r['keep_score'], reverse=True)
+    keep_n = active_cap if active_cap is not None else len(recs)
+
+    over_budget = bool(budget) and sum(r['salary'] for r in recs
+                                       if r['is_active']) > budget
+
+    # How many MUST be cut: the overage beyond the cap. 0 → no forced cuts.
+    overage = max(0, len(recs) - keep_n) if active_cap is not None else 0
+
+    # First pass: tag aging-vet sells and prospect-holds; default everyone to keep.
+    aging_vets = []
+    for r in recs:
+        is_prospect_hold = (
+            mode == 'Rebuilding'
+            and r['service'] < HOLD_DOWN_SERVICE_MAX
+            and r['later'] >= HOLD_DOWN_FUTURE_MIN
+            and not r['is_active']
+            and r['in_optimal_active']
+        )
+        is_aging_vet_sell = (
+            mode == 'Rebuilding'
+            and r['age'] >= REBUILD_VET_AGE_MIN
+            and r['control'] <= REBUILD_VET_CONTROL_MAX
+            and r['now'] >= REBUILD_VET_NOW_MIN
+        )
+
+        if is_prospect_hold:
+            r['decision'] = 'hold-down'
+        elif r['in_optimal_active'] and not r['is_active']:
+            r['decision'] = 'promote'
+        elif is_aging_vet_sell:
+            aging_vets.append(r)               # candidate — capped below
+            r['decision'] = 'keep'             # default; promoted to trade if in cap
+        else:
+            r['decision'] = 'keep'
+
+    # Proactive-trade cap: you can only absorb so many returns per window. Sell the
+    # most VALUABLE vets first (highest present WAR — best return); the rest hold.
+    # Rolling: trade one, re-export, and the next vet surfaces into the open slot.
+    aging_vets.sort(key=lambda r: (r['chip'], r['now']), reverse=True)
+    for r in aging_vets[:max(0, int(max_proactive_trades))]:
+        r['decision'] = 'trade'
+        r['_proactive'] = True
+
+    # Second pass: FORCE moves only if over the cap. The weakest 'keep' bodies by
+    # overall projection (now + later) come off — lowest first. A useful player who
+    # must come off is a TRADE (sell, don't release); a low-value one is a CUT.
+    if overage > 0:
+        cut_candidates = [r for r in recs if r['decision'] == 'keep']
+        cut_candidates.sort(key=lambda r: (r['now'] + r['later']))   # worst first
+        for r in cut_candidates[:overage]:
+            useful = (r['now'] >= TRADE_NOW_MIN or r['chip'] >= TRADE_CHIP_MIN
+                      or r['later'] >= HOLD_DOWN_FUTURE_MIN)
+            r['decision'] = 'trade' if useful else 'cut'
+            r['_forced'] = True
+
+    # ── Reasons ───────────────────────────────────────────────────────────────
+    for r in recs:
+        why = []
+        d = r['decision']
+        if d == 'promote':
+            why.append(f"present WAR ({r['now']}) cracks the active top-{active_cap}")
+        elif d == 'hold-down':
+            why.append(f"rebuild: {r['service']}yr service, {r['later']} future WAR — "
+                       "promoting starts the FA clock; consider banking a control year")
+        elif d == 'trade':
+            if (mode == 'Rebuilding' and r['age'] >= REBUILD_VET_AGE_MIN
+                    and r['control'] <= REBUILD_VET_CONTROL_MAX
+                    and r['now'] >= REBUILD_VET_NOW_MIN):
+                why.append(f"rebuild sell-high: {r['now']} WAR, age {r['age']}, "
+                           f"{r['control']}yr control — cash the vet for prospects")
+            else:
+                why.append(f"below the keep line but useful (now {r['now']}, "
+                           f"TV {r['chip']}) — sell, don't release")
+        elif d == 'cut':
+            why.append(f"over the cap — forced cut, lowest overall projection "
+                       f"(now {r['now']} + later {r['later']})")
+        else:
+            why.append({'prospect': "future value (defensive clock decays, A19)",
+                        'borderline': "present value / trade chip",
+                        'backup': "present insurance"}[r['type']])
+        if over_budget and r['is_active'] and r['salary'] > 0:
+            why.append(f"${r['salary']:,} salary — over budget, weigh $/WAR")
+        r['reasons'] = why
+
+    counts = {v: sum(1 for r in recs if r['decision'] == v)
+              for v in ('promote', 'keep', 'trade', 'cut', 'hold-down')}
+    return {
+        'records': recs, 'active_cap': active_cap,
+        'n_promote': counts['promote'], 'n_keep': counts['keep'],
+        'n_trade': counts['trade'], 'n_cut': counts['cut'],
+        'n_hold': counts['hold-down'],
+        'over_budget': over_budget,
+        'payroll': sum(r['salary'] for r in recs if r['is_active']),
+        'budget': int(budget), 'mode': mode, 'phase': phase,
+    }

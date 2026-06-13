@@ -33,6 +33,7 @@ from acquisitions import (
     batter_f1, pitcher_f1, sp_f1, rp_f1,
     off_f1, def_war, pos_adj,
     trade_value,
+    f2_war,
     cnt_eff_pitches, min_eff_pitch,
     top_pitch_grade, secondary_pitch_count,
     passes_pitch_gate, thin_out_pitch, PITCH_GATE_DEFAULTS,
@@ -182,18 +183,33 @@ def flex_summary(row) -> str:
 # ACTIVE / RESERVE SPLIT
 # ══════════════════════════════════════════════════════════════════════════════
 
+# The OOTP 27 player export labels the active-roster flag 'ACT' (Yes/No); older
+# notes called it 'IS_ACTIVE'. Accept either so the reserve board works on a real
+# export with no re-export needed.
+ACTIVE_FLAG_COLS = ('IS_ACTIVE', 'ACT')
+_ACTIVE_TRUTHY = ('1', 'true', 'yes', 'y', 't')
+
+
+def _active_flag_col(df: pd.DataFrame) -> str | None:
+    """Return whichever active/reserve flag column the export carries, or None."""
+    for c in ACTIVE_FLAG_COLS:
+        if c in df.columns:
+            return c
+    return None
+
+
 def split_active_reserve(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Split a roster into (active_25, reserve) DataFrames using IS_ACTIVE if present.
+    Split a roster into (active, reserve) DataFrames using the active flag
+    (ACT or IS_ACTIVE) if present.
 
-    Falls back to returning (all, empty) if IS_ACTIVE column not in export.
+    Falls back to returning (all, empty) if no active-flag column is in the export.
     """
-    if 'IS_ACTIVE' not in df.columns:
+    flag = _active_flag_col(df)
+    if flag is None:
         return df.copy(), df.iloc[0:0].copy()
 
-    active_mask = df['IS_ACTIVE'].astype(str).str.lower().isin(
-        ('1', 'true', 'yes', 'y', 't')
-    )
+    active_mask = df[flag].astype(str).str.strip().str.lower().isin(_ACTIVE_TRUTHY)
     return df[active_mask].copy(), df[~active_mask].copy()
 
 
@@ -216,6 +232,11 @@ def _build_player_row(row_dict: dict) -> dict:
         f1 = batter_f1(row_dict)
     else:
         f1 = 0.0
+
+    # F2 — rating-based projected WAR (no accumulated stats / IP needed). This is
+    # the stats-independent quality signal; need/surplus detection uses it for
+    # pitchers because pitcher F1 is IP-driven and collapses negative at 0 IP.
+    f2 = f2_war(row_dict) if pos in (set(PITCHER_POSITIONS) | set(BATTER_POSITIONS)) else 0.0
 
     # Service / control
     ml_yrs   = _s(row_dict.get('ML_YRS', 0))
@@ -286,6 +307,7 @@ def _build_player_row(row_dict: dict) -> dict:
         'POS':      pos,
         'Age':      age,
         'F1':       round(f1, 2),
+        'F2':       round(f2, 2),
         'TV':       tv,
         'Control':  control,
         'Svc_Yrs':  svc_yrs,
