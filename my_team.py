@@ -60,26 +60,26 @@ _DAYS_PER_SERVICE_YEAR = 76
 # These floors are projections, not in-season totals — same scale Jeff's SS
 # accumulates 16-20 ZR on.
 
-ZR_PLAYABLE_FLOOR = {
-    '1B': -5,  # very forgiving — bat carries the position
-    'LF': -3,  # forgiving
+ZR_PLAYABLE_FLOOR = {   # PROVISIONAL — re-stated on augmented K-T ZR_MODELS (rating-quality bars preserved)
+    '1B': -2,  # very forgiving — bat carries the position
+    'LF': -5,  # forgiving
     'RF':  0,  # average projection
-    '3B':  0,
-    '2B':  0,
-    'CF':  2,  # CF demands above-average range
-    'C':   0,
-    'SS':  2,  # SS demands above-average range/arm
+    '3B': -2,
+    '2B': -5,
+    'CF': -4,  # CF demands above-average range
+    'C':   0,  # catcher back-solve noisy + lock-gated; held at original
+    'SS': -1,  # SS demands above-average range/arm
 }
 
-ZR_PLUS_FLOOR = {
-    '1B':  3,
-    'LF':  4,
-    'RF':  5,
-    '3B':  5,
-    '2B':  5,
-    'CF':  7,
-    'C':   5,
-    'SS':  8,
+ZR_PLUS_FLOOR = {       # PROVISIONAL — re-stated on augmented K-T ZR_MODELS
+    '1B':  5,
+    'LF':  2,
+    'RF':  2,
+    '3B':  7,
+    '2B':  1,
+    'CF':  4,
+    'C':   5,  # held at original (see playable note)
+    'SS':  6,
 }
 
 # SP-capable threshold — RETIRED.

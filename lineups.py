@@ -68,18 +68,18 @@ CARD_ORDER = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF']
 # league-average arm. e.g. SS IF_RNG=60 → predicted ZR ≈ +6 via the SS model.
 # These are the DEFAULTS; the UI lets Jeff edit each one directly.
 #
-# Anchoring math (for reference, computed from ZR_MODELS):
-#   SS  ZR = -66.76 + 0.9064*IF_RNG + 0.3012*IF_ARM ; @RNG60,ARM50 ≈ +3.0
-#   CF  ZR = -46.77 + 0.8833*OF_RNG                  ; @RNG60       ≈ +6.2
-#   2B  ZR = -47.24 + 0.8635*IF_RNG + 0.0644*IF_ARM ; @RNG50,ARM50 ≈ -0.8
+# Anchoring math (for reference, computed from the augmented K-T ZR_MODELS):
+#   SS  ZR = -97.44 + 1.1074*IF_RNG + 0.4221*IF_ARM + 0.1589*IF_ERR ; @RNG60,ARM60,ERR55 ≈ +3.1
+#   CF  ZR = -80.38 + 1.3874*OF_RNG                                 ; @RNG60             ≈ +2.9
+#   2B  ZR = -75.46 + 1.0723*IF_RNG + 0.1578*IF_ARM + 0.1372*IF_ERR ; @RNG50,ARM55,ERR55 ≈ -5.6
 # The raw back-solve gives uneven numbers; we round to clean, slightly-conservative
 # floors that preserve the spectrum (SS/CF strict, 2B moderate, rest loose).
-DEFAULT_ZR_FLOORS = {
+DEFAULT_ZR_FLOORS = {   # PROVISIONAL — re-stated on augmented K-T ZR_MODELS (encoded rating rules preserved)
     'C':   -99.0,   # locked by default — floor effectively off
-    'SS':    3.0,   # strict (Jeff: IF_RNG ≥ 60)
-    'CF':    6.0,   # strict (Jeff: OF_RNG ≥ 60)
-    '2B':   -1.0,   # moderate (Jeff: IF_RNG ≥ 50)
-    '3B':   -6.0,   # looser; arm also gated below
+    'SS':    3.0,   # strict (IF_RNG ≥ 60 → +3.1 under new SS model; unchanged)
+    'CF':    3.0,   # strict (OF_RNG ≥ 60 → +2.9 under new CF model; was 6.0 — steeper A26 CF model)
+    '2B':   -5.5,   # moderate (IF_RNG ≥ 50 → -5.6 under new 2B model; was -1.0)
+    '3B':   -6.0,   # looser; arm-gated below (THIRD_BASE_ARM_FLOOR does the real work) — keep
     'RF':  -99.0,   # bat-first
     'LF':  -99.0,   # bat-first
     '1B':  -99.0,   # "wears a glove"

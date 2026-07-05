@@ -35,10 +35,19 @@ POS_MULT = {
 }
 
 # WAR-reconstruction positional constants (OOTP 27 sim-validated)
-POS_ADJ_CONSTANTS = {
-    'C':  3.252, 'SS': 3.022, '2B': 2.646, '3B': 2.547,
-    'CF': 2.503, 'LF': 1.832, 'RF': 1.829, '1B': 1.556,
+POS_ADJ_CONSTANTS = {   # PROVISIONAL — AC→27 migration retune (clean K-T glove-free pos_adj, 1B-ref)
+    'C':  1.5191, 'SS': 1.2905, '3B': 0.9229, '2B': 0.8689,
+    'CF': 0.7694, 'RF': 0.2103, 'LF': 0.1216, '1B': 0.0,
 }
+
+# Centered clean K-T pos_adj (pos_adj_centered) — used by the A26 F2 career-swap.
+POS_ADJ_KT_C = {        # PROVISIONAL — AC→27 migration retune
+    'C': 0.8062, '1B': -0.7128, '2B': 0.1561, '3B': 0.2100,
+    'SS': 0.5777, 'LF': -0.5912, 'CF': 0.0566, 'RF': -0.5025,
+}
+
+# A26 def→WAR slope (WAR-true defensive value) — applied inside def_war().
+DEF_SLOPE = 0.8369280875258747   # PROVISIONAL — AC→27 migration retune
 
 PITCHER_POSITIONS = {'SP', 'RP', 'CL'}
 BATTER_POSITIONS  = {'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF'}
@@ -364,14 +373,15 @@ def off_f1(row) -> float:
     if babip < 1.0:
         babip = 50.0
 
-    return (-14.168
-        + pow_  * 0.1142
-        + babip * 0.0725
-        + eye   * 0.0400
-        + con   * 0.0379
-        + avk   * 0.0317
-        + gap   * 0.0291
-        + spe   * 0.0128)
+    # PROVISIONAL — AC→27 migration retune (A28 current-value batter re-weight, K-T;
+    # BABIP + AVK dropped; CON restored as co-anchor). babip/avk locals kept above but
+    # intentionally unused so the development.py off_f1 probe still resolves them to 0.
+    return (-10.431
+        + con  * 0.0914        # co-anchor (was 0.0379 — under-weighted)
+        + pow_ * 0.0651        # co-anchor (anchor)
+        + spe  * 0.0366
+        + gap  * 0.0339
+        + eye  * 0.0300)       # weak — ~half its old weight (do NOT anchor on eye)
 
 
 # ── Batter F1: DEF component ──────────────────────────────────────────────────
@@ -379,23 +389,23 @@ def off_f1(row) -> float:
 # ZR model coefficients ported from v26 validated models (same rating scale).
 # Conversion: DEF_WAR = ZR * ZR_WAR_FACTOR[pos]
 # Registry: DEF_WAR = (ZR + ARM) / 10; ZR_WAR factors calibrated per position.
-ZR_MODELS = {
-    'C':  {'intercept': -7.32,
-           'coefs': {'C_ABI': 0.0628, 'C_FRM': 0.0196, 'C_ARM': 0.0539}},
-    '1B': {'intercept': -13.43,
-           'coefs': {'IF_RNG': 0.2540, 'IF_ERR': 0.0293, 'IF_ARM': -0.0013}},
-    '2B': {'intercept': -47.24,
-           'coefs': {'IF_RNG': 0.8635, 'IF_ARM': 0.0644}},
-    '3B': {'intercept': -31.44,
-           'coefs': {'IF_RNG': 0.3331, 'IF_ARM': 0.2642}},
-    'SS': {'intercept': -66.76,
-           'coefs': {'IF_RNG': 0.9064, 'IF_ARM': 0.3012}},
-    'LF': {'intercept': -29.47,
-           'coefs': {'OF_RNG': 0.6079, 'OF_ARM': 0.0041}},
-    'CF': {'intercept': -46.77,
-           'coefs': {'OF_RNG': 0.8833}},
-    'RF': {'intercept': -52.45,
-           'coefs': {'OF_RNG': 0.9968, 'OF_ARM': 0.0669}},
+ZR_MODELS = {   # PROVISIONAL — AC→27 migration retune (K-T native refit; 2B/SS/3B +IF_ERR, TDP dropped)
+    'C':  {'intercept': -17.4953,
+           'coefs': {'C_ABI': 0.1766, 'C_FRM': 0.0804, 'C_ARM': 0.0547}},
+    '1B': {'intercept': -10.3784,
+           'coefs': {'IF_RNG': 0.1993, 'IF_ERR': 0.0547, 'IF_ARM': -0.0045}},
+    '2B': {'intercept': -75.4638,
+           'coefs': {'IF_RNG': 1.0723, 'IF_ARM': 0.1578, 'IF_ERR': 0.1372}},
+    '3B': {'intercept': -86.3146,
+           'coefs': {'IF_RNG': 0.5712, 'IF_ARM': 0.6885, 'IF_ERR': 0.2797}},
+    'SS': {'intercept': -97.4449,
+           'coefs': {'IF_RNG': 1.1074, 'IF_ARM': 0.4221, 'IF_ERR': 0.1589}},
+    'LF': {'intercept': -40.7281,
+           'coefs': {'OF_RNG': 0.6287, 'OF_ARM': 0.1705}},
+    'CF': {'intercept': -80.3773,
+           'coefs': {'OF_RNG': 1.3874}},
+    'RF': {'intercept': -33.5179,
+           'coefs': {'OF_RNG': 0.5819, 'OF_ARM': 0.0840}},
 }
 
 # Per-position ZR → DEF_WAR conversion factors (v26 validated, carried to v27)
@@ -417,7 +427,7 @@ def def_war(row, pos: str) -> float:
     zr  = m['intercept']
     for col, coef in m['coefs'].items():
         zr += _s(row.get(col, 0)) * coef
-    return zr * ZR_WAR_FACTOR[pos]
+    return zr * ZR_WAR_FACTOR[pos] * DEF_SLOPE   # PROVISIONAL — A26 def→WAR slope
 
 
 def pos_adj(row, pos: str) -> float:
@@ -641,7 +651,6 @@ def sp_f1(row) -> float:
             + _s(row.get('PIT_CON_vL',0)) * 0.0161
             + _s(row.get('PIT_CON_vR',0)) * 0.0249
             + _s(row.get('STM',       0)) * (-0.0181)
-            + _s(row.get('velo_mid',  0)) * (-0.0005)
             + _s(row.get('IP',        0)) * 0.0306
             + _s(row.get('PBABIP',    0)) * (-0.0240)
             + _s(row.get('HRA',       0)) * 0.0387
@@ -669,7 +678,6 @@ def sp_f1(row) -> float:
             + _s(row.get('MOV',    0)) * (0.0040 + 0.0299) / 2
             + _s(row.get('PIT_CON',0)) * (0.0149 + 0.0289) / 2
             + _s(row.get('STM',    0)) * (-0.0191)
-            + _s(row.get('velo_mid',0)) * 0.0056
             + _s(row.get('IP',     0)) * 0.0315
             + _s(row.get('PBABIP', 0)) * (-0.0303)
             + _s(row.get('HRA',    0)) * 0.0399
@@ -695,7 +703,6 @@ def rp_f1(row) -> float:
             + _s(row.get('PIT_CON_vL',0)) * 0.0003
             + _s(row.get('PIT_CON_vR',0)) * 0.0232
             + _s(row.get('STM',       0)) * (-0.0004)
-            + _s(row.get('velo_mid',  0)) * (-0.0014)
             + _s(row.get('PIT_HLD',   0)) * (-0.0008)
             + _s(row.get('IP',        0)) * 0.0151
             + _s(row.get('PBABIP',    0)) * (-0.0013)
@@ -722,7 +729,6 @@ def rp_f1(row) -> float:
             + _s(row.get('MOV',    0)) * (-0.0064 + 0.0168) / 2
             + _s(row.get('PIT_CON',0)) * (0.0000 + 0.0259) / 2
             + _s(row.get('STM',    0)) * (-0.0004)
-            + _s(row.get('velo_mid',0)) * (-0.0030)
             + _s(row.get('PIT_HLD',0)) * (-0.0008)
             + _s(row.get('IP',     0)) * 0.0152
             + _s(row.get('PBABIP', 0)) * (-0.0023)
@@ -1171,8 +1177,16 @@ def _f2_score(row, coef: dict, intercept: float) -> float:
 
 
 def f2_batter_war(row) -> float:
-    """Batter F2 live-draft projected mature WAR (per-realization K-T coefficients)."""
-    return _f2_score(row, _F2_BATTER_COEF, _F2_BATTER_INTERCEPT)
+    """Batter F2 live-draft projected mature WAR (per-realization K-T coefficients).
+    A26 career-swap (PROVISIONAL — AC→27 retune): the raw F2 POS dummy added at the
+    LISTED position inside _f2_score is retired for the clean K-T pos_adj (centered)
+    at the BEST-FIT position. Ranking-preserving positional correction; subtracts the
+    code's own raw _F2_BATTER_COEF dummy (not centered F2_c) so cancellation is exact."""
+    base   = _f2_score(row, _F2_BATTER_COEF, _F2_BATTER_INTERCEPT)
+    listed = str(row.get('POS', '')).strip()
+    best   = best_fit_position(row)['best']        # fail-loud on missing POS (via best-fit)
+    swap   = POS_ADJ_KT_C[best] - _F2_BATTER_COEF.get(f'POS_{listed}', 0.0)
+    return round(max(0.0, min(9.0, base + swap)), 2)
 
 
 def f2_pitcher_war(row) -> float:
@@ -1904,15 +1918,15 @@ POS_ELIGIBILITY_FLOOR = 40
 
 # Skills required per position — maps position → list of (skill_col, min_rating)
 # All conditions must be met for eligibility
-POS_SKILL_REQUIREMENTS = {
-    'C':  [('C_ABI', 40)],
-    '1B': [('IF_RNG', 40)],
-    '2B': [('IF_RNG', 40)],
-    '3B': [('IF_RNG', 40)],
-    'SS': [('IF_RNG', 40), ('IF_ARM', 40)],   # SS needs both range AND arm
-    'LF': [('OF_RNG', 40)],
-    'CF': [('OF_RNG', 40)],                    # CF needs higher range in practice
-    'RF': [('OF_RNG', 40)],
+POS_SKILL_REQUIREMENTS = {   # PROVISIONAL — A29 tool-derived PLAYABLE floors (each on its own tool)
+    'C':  [('C_ABI', 40)],                     # catcher-specific; unchanged
+    '1B': [('IF_RNG', 17)],                    # floor — anyone
+    '2B': [('IF_RNG', 51)],
+    '3B': [('IF_RNG', 43), ('IF_ARM', 45)],    # 3B re-pinned on augmented K-T (was doc 37)
+    'SS': [('IF_RNG', 54), ('IF_ARM', 50)],    # SS needs both range AND arm
+    'LF': [('OF_RNG', 42)],
+    'CF': [('OF_RNG', 56)],                    # CF demands above-average range
+    'RF': [('OF_RNG', 42)],
     # Pitchers: STM threshold for SP role capability
     'SP': [('STM', 40)],
 }
