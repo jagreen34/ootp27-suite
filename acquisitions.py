@@ -35,12 +35,19 @@ POS_MULT = {
 }
 
 # WAR-reconstruction positional constants (OOTP 27 sim-validated)
-POS_ADJ_CONSTANTS = {   # PROVISIONAL — AC→27 migration retune (clean K-T glove-free pos_adj, 1B-ref)
+POS_ADJ_CONSTANTS = {   # F1-RANK positional value — CONFIRMED by clean K-T (ρ=0.95); reconstructs absolute WAR — UNCHANGED (A26)
+    'C':  3.252, 'SS': 3.022, '2B': 2.646, '3B': 2.547,
+    'CF': 2.503, 'LF': 1.832, 'RF': 1.829, '1B': 1.556,
+}
+
+# Clean K-T glove-free pos_adj (1B=0 ref) — used at BEST-FIT only. A26 retires the F2 POS dummies
+# (F2/career path), NOT the F1-rank POS_ADJ_CONSTANTS above. Composes with 0.837-scaled def, no double-count.
+POS_ADJ_KT = {          # PROVISIONAL — AC→27 migration retune
     'C':  1.5191, 'SS': 1.2905, '3B': 0.9229, '2B': 0.8689,
     'CF': 0.7694, 'RF': 0.2103, 'LF': 0.1216, '1B': 0.0,
 }
 
-# Centered clean K-T pos_adj (pos_adj_centered) — used by the A26 F2 career-swap.
+# Centered clean K-T pos_adj — used by the A26 F2 career-swap (centering-neutral).
 POS_ADJ_KT_C = {        # PROVISIONAL — AC→27 migration retune
     'C': 0.8062, '1B': -0.7128, '2B': 0.1561, '3B': 0.2100,
     'SS': 0.5777, 'LF': -0.5912, 'CF': 0.0566, 'RF': -0.5025,
@@ -515,10 +522,11 @@ def glove_war(row, pos: str | None = None) -> float:
 
 
 def _pos_adj_fixed(pos: str) -> float:
-    """Positional adjustment on a fixed full-season basis (PA-independent)."""
-    if pos not in POS_ADJ_CONSTANTS:
+    """Positional adjustment on a fixed full-season basis (PA-independent).
+    A26: best-fit uses the clean K-T glove-free pos_adj (POS_ADJ_KT), NOT the F1-rank constants."""
+    if pos not in POS_ADJ_KT:
         return 0.0
-    return (_BESTFIT_PA_BASIS / 650.0) * POS_ADJ_CONSTANTS[pos]
+    return (_BESTFIT_PA_BASIS / 650.0) * POS_ADJ_KT[pos]
 
 
 def _bestfit_eligible_positions(row) -> list:
