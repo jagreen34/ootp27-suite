@@ -442,6 +442,23 @@ class League:
             return None
         return pd.read_csv(io.StringIO(row['csv_data']), encoding='utf-8', low_memory=False)
 
+    def snapshot_player_history(self, name: str) -> list[dict]:
+        """Per-player trajectory across all accumulated snapshots (oldest→newest).
+        Reads the snapshot_players index (populated by save_snapshot only), joined to
+        the parent snapshot for date/season/label. Returns [] if the player has never
+        been snapshotted. Used by the Player Card history panel."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT s.id AS snapshot_id, s.label, s.season_year, s.created_at, "
+                "sp.pos, sp.age, sp.pow, sp.con, sp.eye, sp.gap, sp.babip, sp.spe, sp.war, "
+                "sp.mov, sp.stu, sp.stm, sp.pit_con, sp.pit_war, sp.off_f1, sp.sp_f1 "
+                "FROM snapshot_players sp JOIN snapshots s ON s.id = sp.snapshot_id "
+                "WHERE sp.name = ? AND s.label != ? "
+                "ORDER BY s.created_at ASC, s.id ASC",
+                (name, LAST_ROSTER_LABEL)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def delete_snapshot(self, snapshot_id: int):
         with self._conn() as c:
             c.execute("DELETE FROM snapshots WHERE id=?", (snapshot_id,))

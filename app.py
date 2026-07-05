@@ -13,6 +13,7 @@ import draft as drf
 import development as dev
 import roster_construction_ui as rcu
 import player_lookup as pl
+import player_card as pc
 
 st.set_page_config(
     page_title="OOTP 27 Suite",
@@ -22,6 +23,7 @@ st.set_page_config(
 
 SECTIONS = [
     "📊 My Team",
+    "🪪 Player Card",
     "⚾ Lineups",
     "🥎 Pitching",
     "🔄 Acquisitions",
@@ -93,6 +95,9 @@ if section == "🔄 Acquisitions":
 
 elif section == "📊 My Team":
     mt.render_my_team(league)
+
+elif section == "🪪 Player Card":
+    pc.render_player_card(league)
 
 elif section == "⚾ Lineups":
     ln.render_lineups(league)
