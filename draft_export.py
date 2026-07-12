@@ -38,37 +38,34 @@ PIT_STAT_COLS = [
     ('PIT_K_PCT', 'K%'), ('PIT_BB_PCT', 'BB%'), ('PIT_GF', 'GB/FB'),
 ]
 
-# ALL pitch-grade columns the AC export carries — NOT just the 4 the F2 value
-# model scores. The model uses only FB/CH/SI/SL, but the AC generates arms whose
-# best pitch is a curve/splitter/cutter/screwball (confirmed: 80-grade curves &
-# splitters everywhere). Those are INVISIBLE to the value/gate logic, so we surface
-# them as raw DISPLAY columns — the user catches by eye what the model can't score.
-# A34: curve (0.89/grade-pt) & splitter (0.71) are HIGH Stuff-weight — often better
-# than the fastball the model does track. Column name guesses cover common variants;
-# _pitch_col() picks whichever exists in the pool.
+# ALL pitch-grade columns — using the EXACT processed names from acquisitions
+# PLAYER_RENAMES (verified against the real draft-pool export). prep_data renames
+# the short CSV names (FB/CB/SP/FO/SC/KC/KN...) → PIT_* BEFORE build_board runs, so
+# by the time this export sees the row, columns are in PIT_* form. The model scores
+# only FB/CH/SI/SL; the rest (curve/splitter/screw/etc.) are model-blind but often
+# 80-grade in the AC — surfaced here as raw DISPLAY columns + an OffModelBest flag.
 ALL_PITCH_COLS = [
-    (['PIT_FB_GR', 'PIT_FB'],        'FB'),
-    (['PIT_SI', 'PIT_SNK'],          'SI'),
-    (['PIT_CT', 'PIT_CUT'],          'CT'),
-    (['PIT_CB', 'PIT_CRV', 'PIT_CV'],'CB'),   # curveball — model-blind, often 80
-    (['PIT_SL'],                     'SL'),
-    (['PIT_CH'],                     'CH'),
-    (['PIT_SP', 'PIT_SPL'],          'SP'),    # splitter — model-blind, often 80
-    (['PIT_FRK', 'PIT_FK'],          'FRK'),   # forkball
-    (['PIT_CCG', 'PIT_CC'],          'CCG'),   # circle change
-    (['PIT_SCR', 'PIT_SC'],          'SCR'),   # screwball
-    (['PIT_KCR', 'PIT_KC'],          'KCR'),   # knuckle curve
-    (['PIT_KN', 'PIT_KNU'],          'KN'),    # knuckleball
+    ('PIT_FB_GR', 'FB'),    # fastball  (modeled)
+    ('PIT_SI',    'SI'),    # sinker    (modeled)
+    ('PIT_CT',    'CT'),    # cutter
+    ('PIT_CB',    'CB'),    # curveball — model-blind, often 80
+    ('PIT_SL',    'SL'),    # slider    (modeled)
+    ('PIT_CH',    'CH'),    # changeup  (modeled)
+    ('PIT_SP',    'SP'),    # splitter  — model-blind, often 80
+    ('PIT_FO',    'FO'),    # forkball
+    ('PIT_CC',    'CC'),    # circle change
+    ('PIT_SC',    'SC'),    # screwball
+    ('PIT_KC',    'KC'),    # knuckle curve
+    ('PIT_KN',    'KN'),    # knuckleball
 ]
-# which four the F2 value model actually scores (for the MODELED flag/awareness)
+# which four the F2 value model actually scores (for the OffModelBest flag)
 MODELED_PITCHES = {'FB', 'SI', 'SL', 'CH'}
 
 
-def _pitch_col(row, candidates):
-    """Return the rating for whichever candidate column exists in the row."""
-    for c in candidates:
-        if c in row and not pd.isna(row.get(c)):
-            return _rating(row, c)
+def _pitch_col(row, col):
+    """Return the rating for a pitch column (single exact name)."""
+    if col in row and not pd.isna(row.get(col)):
+        return _rating(row, col)
     return ''
 
 
@@ -134,6 +131,7 @@ PIT_DEV_RATINGS = [
     ('HRA', 'HRA P', 'HRA_EC'),
     ('PIT_FB_GR', 'PIT_FB_GR_P', 'FB_EC'), ('PIT_CH', 'PIT_CH_P', 'CH_EC'),
     ('PIT_SI', 'PIT_SI_P', 'SI_EC'), ('PIT_SL', 'PIT_SL_P', 'SL_EC'),
+    ('PIT_CB', 'PIT_CB_P', 'CB_EC'), ('PIT_SP', 'PIT_SP_P', 'SP_EC'),
 ]
 
 
@@ -195,8 +193,8 @@ def board_to_dataframe(rows: list[dict], pool_df: pd.DataFrame) -> pd.DataFrame:
                 rec[label] = eff_ceiling(r.get(cur_c), r.get(pot_c), x['age'])
             # ALL 12 pitch grades as display columns (model scores only 4)
             best_grade, best_label, best_modeled = 0, '', True
-            for candidates, label in ALL_PITCH_COLS:
-                v = _pitch_col(r, candidates)
+            for col, label in ALL_PITCH_COLS:
+                v = _pitch_col(r, col)
                 rec[label] = v
                 g = _s(v, 0)
                 if g > best_grade:
