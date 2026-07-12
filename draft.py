@@ -400,6 +400,24 @@ def render_draft(league: League):
     hand_active = draft_pool_has_handedness(pool)
     glove_active = draft_pool_can_glove(pool)
 
+    # ── Flat spreadsheet export (all raw ratings + all 12 pitch types +
+    #    A31 effective-ceiling + derived engine fields). Slice-it-yourself board.
+    try:
+        from draft_export import board_to_dataframe, write_board_xlsx
+        _exp_df = board_to_dataframe(rows, pool)
+        _exp_path = write_board_xlsx(_exp_df, league)
+        with open(_exp_path, 'rb') as _fh:
+            st.download_button(
+                "⬇️ Export board (.xlsx)",
+                data=_fh.read(),
+                file_name=f"draft_board{('_'+str(getattr(league,'season','')) if getattr(league,'season',None) else '')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                help="Flat table: every rating, all 12 pitch grades, effective-ceiling "
+                     "(A31 age cap), and the derived board fields — sort/filter in Excel.",
+            )
+    except Exception as _exp_err:
+        st.caption(f"⚠️ board export unavailable: {_exp_err}")
+
     tab_board, tab_grades, tab_method = st.tabs(
         ["📋 Board", "🥎 Pitch Grades", "📐 Methodology"]
     )
