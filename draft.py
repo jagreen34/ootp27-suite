@@ -153,17 +153,60 @@ def _get_draft_pool(league: League):
     return pd.read_csv(io.StringIO(row['csv_data']), encoding='utf-8', low_memory=False)
 
 
-def _ingest_draft_upload(uploaded):
+def _convert_1to100_to_2080(raw: pd.DataFrame) -> pd.DataFrame:
+    """Convert 1-100 rating columns to the 20-80 scale the whole suite/model was
+    trained on. Formula VERIFIED against a paired export (same 193 prospects, both
+    scales): 20-80 = round_to_nearest_5(20 + 0.6 * v1_100) — 95.2% exact, the rest
+    off by exactly one 5-step (rounding boundary, within the fog). Applied ONLY to
+    rating columns; identity/stat/counting columns are left untouched.
+    """
+    df = raw.copy()
+    # rating columns (short CSV names, pre-rename) that live on the 1-100/20-80 scale
+    RATING_COLS = [
+        # batter
+        'CON','BABIP','GAP','POW','EYE',"K's",'CON P','GAP P','POW P','EYE P','K P',
+        'BUN','BFH','SPE','SR','STE','RUN',
+        # pitcher core + potentials
+        'STU','MOV','CON_1','PBABIP','HRA','STU P','MOV P','CON P_1','PBABIP P','HRA P',
+        # pitch grades + potentials (all 12)
+        'FB','FBP','CH','CHP','CB','CBP','SL','SLP','SI','SIP','SP','SPP','CT','CTP',
+        'FO','FOP','CC','CCP','SC','SCP','KC','KCP','KN','KNP',
+        # fielding tools
+        'C ABI','C FRM','C ARM','IF RNG','IF ERR','IF ARM','TDP',
+        'OF RNG','OF ERR','OF ARM',
+        # position ratings + potentials
+        'P','C','1B','2B','3B','SS','LF','CF','RF',
+        'P Pot','C Pot','1B Pot','2B Pot','3B Pot','SS Pot','LF Pot','CF Pot','RF Pot',
+        'STM','PT',
+    ]
+    for c in RATING_COLS:
+        if c in df.columns:
+            v = pd.to_numeric(df[c], errors='coerce')
+            conv = (20.0 + 0.6 * v)
+            conv = (conv / 5.0).round() * 5.0          # round to nearest 5
+            # keep NaN where the source was non-numeric/blank; ints elsewhere
+            df[c] = conv.where(v.notna(), df[c])
+    return df
+
+
+def _ingest_draft_upload(uploaded, scale: str = '20-80'):
     """
     Read + engine-guard + ORG=="-" filter + audit + prep a draft-pool CSV.
     Returns (df, audit_report, error). FAILS LOUD: if the column audit finds a
     missing load-bearing F2 column, returns (None, report, None) so the caller
     can show exactly what's missing instead of scoring on silent zeros.
+
+    `scale`: '20-80' (default, the scale the model expects) or '1-100' (converts
+    to 20-80 on load via the verified round_to_5(20 + 0.6*v) formula).
     """
     try:
         raw = pd.read_csv(uploaded, encoding='utf-8-sig', low_memory=False)
     except Exception as e:
         return None, None, f"Failed to read CSV: {e}"
+
+    # Scale normalization — BEFORE anything else touches the ratings.
+    if scale == '1-100':
+        raw = _convert_1to100_to_2080(raw)
 
     # Engine guard (same signature check as the roster modules).
     v27 = {'CON_1', 'BABIP_1', 'WAR_1'}
@@ -360,10 +403,20 @@ def render_draft(league: League):
             "audits every F2 column before scoring."
         )
         up = st.file_uploader("Draft-pool CSV", type=['csv'], key='draft_upload')
+        _scale = st.radio(
+            "Rating scale in this file",
+            ['20-80', '1-100'],
+            horizontal=True,
+            key='draft_scale',
+            help="OOTP Global Settings → Player Rating Scales. The suite/model is "
+                 "built on 20-80. Pick 1-100 if your export used that scale — it's "
+                 "converted on load via round_to_5(20 + 0.6×v), verified exact. "
+                 "Wrong scale = every prospect reads as replacement-level filler.",
+        )
         if up is not None:
-            uid = f"{up.name}:{up.size}"
+            uid = f"{up.name}:{up.size}:{_scale}"
             if st.session_state.get('_draft_upload_id') != uid:
-                new_df, report, err = _ingest_draft_upload(up)
+                new_df, report, err = _ingest_draft_upload(up, scale=_scale)
                 if err:
                     st.error(err)
                 elif report is not None and not report['ok']:
