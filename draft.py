@@ -77,6 +77,7 @@ from acquisitions import (
 )
 from roster_construction import detect_needs_and_surplus   # shared team-need primitive
 from my_team import build_roster_table
+from rating_scale import _convert_1to100_to_2080   # B3.1: shared scale toggle
 import park_fit as pf   # A22 hitter Park Fit Δ — shared additive lens
 import edge_confidence as ec   # Edge Stability + Total Value (opt-in composite lens)
 
@@ -151,42 +152,6 @@ def _get_draft_pool(league: League):
     if row is None:
         return None
     return pd.read_csv(io.StringIO(row['csv_data']), encoding='utf-8', low_memory=False)
-
-
-def _convert_1to100_to_2080(raw: pd.DataFrame) -> pd.DataFrame:
-    """Convert 1-100 rating columns to the 20-80 scale the whole suite/model was
-    trained on. Formula VERIFIED against a paired export (same 193 prospects, both
-    scales): 20-80 = round_to_nearest_5(20 + 0.6 * v1_100) — 95.2% exact, the rest
-    off by exactly one 5-step (rounding boundary, within the fog). Applied ONLY to
-    rating columns; identity/stat/counting columns are left untouched.
-    """
-    df = raw.copy()
-    # rating columns (short CSV names, pre-rename) that live on the 1-100/20-80 scale
-    RATING_COLS = [
-        # batter
-        'CON','BABIP','GAP','POW','EYE',"K's",'CON P','GAP P','POW P','EYE P','K P',
-        'BUN','BFH','SPE','SR','STE','RUN',
-        # pitcher core + potentials
-        'STU','MOV','CON_1','PBABIP','HRA','STU P','MOV P','CON P_1','PBABIP P','HRA P',
-        # pitch grades + potentials (all 12)
-        'FB','FBP','CH','CHP','CB','CBP','SL','SLP','SI','SIP','SP','SPP','CT','CTP',
-        'FO','FOP','CC','CCP','SC','SCP','KC','KCP','KN','KNP',
-        # fielding tools
-        'C ABI','C FRM','C ARM','IF RNG','IF ERR','IF ARM','TDP',
-        'OF RNG','OF ERR','OF ARM',
-        # position ratings + potentials
-        'P','C','1B','2B','3B','SS','LF','CF','RF',
-        'P Pot','C Pot','1B Pot','2B Pot','3B Pot','SS Pot','LF Pot','CF Pot','RF Pot',
-        'STM','PT',
-    ]
-    for c in RATING_COLS:
-        if c in df.columns:
-            v = pd.to_numeric(df[c], errors='coerce')
-            conv = (20.0 + 0.6 * v)
-            conv = (conv / 5.0).round() * 5.0          # round to nearest 5
-            # keep NaN where the source was non-numeric/blank; ints elsewhere
-            df[c] = conv.where(v.notna(), df[c])
-    return df
 
 
 def _ingest_draft_upload(uploaded, scale: str = '20-80'):

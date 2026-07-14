@@ -1,6 +1,6 @@
 """
 OOTP 27 Evaluation Suite — v1.0
-Flat navigation | v14.2 registry locked | SQLite persistence | Docker-ready
+Flat navigation | v15.17 registry locked | SQLite persistence | Docker-ready
 """
 import streamlit as st
 import pandas as pd
@@ -38,7 +38,7 @@ def get_league():
     return st.session_state.get('active_league', None)
 
 st.title("⚾ OOTP 27 Suite")
-st.caption("v1.0 | v15.3 registry | F1.1 SP/RP | Full batter F1 reconstruction")
+st.caption("v1.0 | v15.17 registry | F1.1 SP/RP | Full batter F1 reconstruction")
 
 st.sidebar.header("🏟️ League")
 
@@ -172,10 +172,17 @@ elif section == "⚙️ Settings":
         st.subheader("Positional Multipliers")
         st.dataframe(pd.DataFrame(list(acq.POS_MULT.items()), columns=['POS', 'Mult']),
                      hide_index=True, use_container_width=False)
-        st.subheader("Delivery Rates (OOTP 27 A-T locked)")
-        st.code("Batter CON 0.48 | GAP 0.48 | POW 0.45 | EYE 0.28\n"
-                "Pitcher STU 0.53 | MOV 0.40 | CON 0.43\n"
-                "Expected mature = current + (potential - current) × delivery_rate")
+        st.subheader("Delivery Rates — ⚠ SUPERSEDED (A31)")
+        st.warning(
+            "The constant-fraction delivery model below is RETIRED. A31 replaced it "
+            "with an age-budget/cliff model (development is an age budget, ~19 internal "
+            "pts/yr ages 21-23, cliff at 24-25, gap inert). Effective ceiling = "
+            "min(shown potential, current + age cap); see draft_export.eff_ceiling. "
+            "Do not use these fractions for projection — kept for provenance only."
+        )
+        st.code("[RETIRED — A31] Batter CON 0.48 | GAP 0.48 | POW 0.45 | EYE 0.28\n"
+                "[RETIRED — A31] Pitcher STU 0.53 | MOV 0.40 | CON 0.43\n"
+                "[RETIRED — A31] Expected mature = current + (potential - current) × delivery_rate")
         st.subheader("Hard Rules")
         st.markdown(
             "- 6-man rotation, 37-GS hard cap (+3.2 WAR)\n"

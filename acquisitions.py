@@ -22,6 +22,7 @@ import pandas as pd
 import streamlit as st
 
 from db import League, compute_control_window, compute_arb_status
+from rating_scale import _convert_1to100_to_2080   # B3.1: shared scale toggle
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -2562,6 +2563,15 @@ def render_mode1(league: League):
         key='acq_upload',
         help="Single combined OOTP 27 player export. Include all tabs per the saved view spec."
     )
+    _scale = st.radio(
+        "Rating scale in this file",
+        ['20-80', '1-100'],
+        horizontal=True,
+        key='acq_m1_scale',
+        help="The suite/model is built on 20-80. Pick 1-100 if your export used that "
+             "scale — converted on load via round_to_5(20 + 0.6×v), verified exact. "
+             "Wrong scale = every player reads as replacement-level filler.",
+    )
 
     if uploaded is None:
         st.info("Upload a league CSV to begin. Use the saved view that includes all required columns.")
@@ -2570,6 +2580,8 @@ def render_mode1(league: League):
     with st.spinner("Loading and evaluating league..."):
         try:
             raw = pd.read_csv(uploaded, encoding='utf-8-sig', low_memory=False)
+            if _scale == '1-100':
+                raw = _convert_1to100_to_2080(raw)
             df  = prep_data(raw)
         except Exception as e:
             st.error(f"Failed to read CSV: {e}")
@@ -2907,6 +2919,15 @@ def render_mode2(league: League):
             key='m2_upload',
             help="Same export as Mode 1"
         )
+        _scale = st.radio(
+            "Rating scale in this file",
+            ['20-80', '1-100'],
+            horizontal=True,
+            key='acq_m2_scale',
+            help="The suite/model is built on 20-80. Pick 1-100 if your export used "
+                 "that scale — converted on load via round_to_5(20 + 0.6×v), verified "
+                 "exact. Wrong scale = every player reads as replacement-level filler.",
+        )
 
     if not sheet_id:
         st.info("Enter your Google Sheet ID above to load trade talk data.")
@@ -2931,6 +2952,8 @@ def render_mode2(league: League):
     with st.spinner("Loading league CSV..."):
         try:
             raw    = pd.read_csv(uploaded, encoding='utf-8-sig', low_memory=False)
+            if _scale == '1-100':
+                raw = _convert_1to100_to_2080(raw)
             league_df = prep_data(raw)
         except Exception as e:
             st.error(f"Failed to read CSV: {e}")
@@ -3149,6 +3172,15 @@ def render_mode3(league: League):
         key='m3_upload',
         help="Same combined export as Mode 1. Free agents appear with ORG = '-'."
     )
+    _scale = st.radio(
+        "Rating scale in this file",
+        ['20-80', '1-100'],
+        horizontal=True,
+        key='acq_m3_scale',
+        help="The suite/model is built on 20-80. Pick 1-100 if your export used that "
+             "scale — converted on load via round_to_5(20 + 0.6×v), verified exact. "
+             "Wrong scale = every player reads as replacement-level filler.",
+    )
 
     if uploaded is None:
         st.info("Upload your league CSV to browse free agents.")
@@ -3157,6 +3189,8 @@ def render_mode3(league: League):
     with st.spinner("Loading..."):
         try:
             raw = pd.read_csv(uploaded, encoding='utf-8-sig', low_memory=False)
+            if _scale == '1-100':
+                raw = _convert_1to100_to_2080(raw)
             df  = prep_data(raw)
         except Exception as e:
             st.error(f"Failed to read CSV: {e}")
@@ -3377,6 +3411,15 @@ def render_mode4(league: League):
         key='m4_upload',
         help="Same combined export as Modes 1-3."
     )
+    _scale = st.radio(
+        "Rating scale in this file",
+        ['20-80', '1-100'],
+        horizontal=True,
+        key='acq_m4_scale',
+        help="The suite/model is built on 20-80. Pick 1-100 if your export used that "
+             "scale — converted on load via round_to_5(20 + 0.6×v), verified exact. "
+             "Wrong scale = every player reads as replacement-level filler.",
+    )
 
     if uploaded is None:
         st.info("Upload your league CSV to begin.")
@@ -3385,6 +3428,8 @@ def render_mode4(league: League):
     with st.spinner("Loading..."):
         try:
             raw       = pd.read_csv(uploaded, encoding='utf-8-sig', low_memory=False)
+            if _scale == '1-100':
+                raw = _convert_1to100_to_2080(raw)
             league_df = prep_data(raw)
         except Exception as e:
             st.error(f"Failed to read CSV: {e}")

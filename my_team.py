@@ -46,6 +46,7 @@ from acquisitions import (
     EFF_PITCH_THRESHOLD,
     _s,
 )
+from rating_scale import _convert_1to100_to_2080   # B3.1: shared scale toggle
 
 # Service time constant — AC rules
 _DAYS_PER_SERVICE_YEAR = 76
@@ -539,11 +540,21 @@ def render_my_team(league: League):
             type=['csv'],
             key='myteam_upload',
         )
+        _scale = st.radio(
+            "Rating scale in this file",
+            ['20-80', '1-100'],
+            horizontal=True,
+            key='myteam_scale',
+            help="OOTP Global Settings → Player Rating Scales. The suite/model is "
+                 "built on 20-80. Pick 1-100 if your export used that scale — it's "
+                 "converted on load via round_to_5(20 + 0.6×v), verified exact. "
+                 "Wrong scale = every player reads as replacement-level filler.",
+        )
         if uploaded is not None:
             # Guard against infinite st.rerun() loop: file_uploader preserves the
             # uploaded file across reruns. Track which file (by name+size) we've
             # already processed so we don't re-save on every rerun.
-            upload_id = f"{uploaded.name}:{uploaded.size}"
+            upload_id = f"{uploaded.name}:{uploaded.size}:{_scale}"
             last_processed = st.session_state.get('_myteam_last_upload_id')
 
             if upload_id != last_processed:
@@ -551,6 +562,11 @@ def render_my_team(league: League):
                     # Read raw — DO NOT prep_data yet. Filter to my team first to avoid
                     # running the heavy F1/rename pipeline on the entire league.
                     raw = pd.read_csv(uploaded, encoding='utf-8-sig', low_memory=False)
+
+                    # Scale normalization — BEFORE the guard/prep touch the ratings.
+                    # A 1-100 file left untouched reads every player replacement-level.
+                    if _scale == '1-100':
+                        raw = _convert_1to100_to_2080(raw)
 
                     # ── Engine-detection guard ──────────────────────────────────
                     # OOTP 27 exports pre-suffix collision columns (CON_1, BABIP_1,
