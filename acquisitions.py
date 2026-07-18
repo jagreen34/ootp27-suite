@@ -1071,39 +1071,42 @@ F2_PITCHER_SD = 1.29
 # Amateur stats entering the HSC×amateur block (interactions built as HSC_MULT*AM).
 _F2_BAT_AM = ['AM_PA','AM_AVG','AM_OBP','AM_SLG','AM_ISO','AM_wOBA','AM_wRAA','AM_BB_PCT','AM_K_PCT']
 _F2_PIT_AM = ['AM_IP','AM_BF','AM_PIT_HR','AM_PIT_ERA']
-_F2_PITCH_GRADES = ['PIT_FB_GR','PIT_CH','PIT_SI','PIT_SL']
+_F2_PITCH_GRADES = ['PIT_FB_GR','PIT_CH','PIT_SI','PIT_SL','PIT_CB','PIT_SP','PIT_CT','PIT_FO','PIT_CC','PIT_SC','PIT_KC','PIT_KN']  # F2 RETRAIN: flat-12
 _F2_BAT_POS = ['SS','CF','C','2B','3B','RF','LF','1B']
 
 # ── DEPLOYED COEFFICIENTS (raw; apply directly to the built feature vector) ─────
 # Fit by fit_f2_deploy.py on K-T, per-realization, Ridge. Verified to reproduce
 # the standardized-pipeline predictions exactly. Regenerate to re-lock.
-_F2_PITCHER_INTERCEPT = -4.555956
+_F2_PITCHER_INTERCEPT = -4.978543
 _F2_PITCHER_COEF = {
-    'STU': 0.032768,
-    'MOV': 0.029443,
-    'PIT_CON': 0.059831,
-    'PBABIP': 0.007992,
-    'HRA': 0.021908,
-    'STM': 0.017101,
-    'AGE': -0.187946,
-    'velo_mid': 0.027167,
-    'RISK_ORD': -0.057635,
-    'COMP_ORD': 0.02074,
-    'HSC_MULT': -0.702437,
-    'SLOT_ORD': -0.029452,
-    'PIT_FB_GR_VAL': 0.011904,
-    'PIT_CH_VAL': 0.022637,
-    'PIT_SI_VAL': 0.018223,
-    'PIT_SL_VAL': 0.007114,
-    'PIT_FB_GR_HAS': -0.445721,
-    'PIT_CH_HAS': -1.044321,
-    'PIT_SI_HAS': -0.724947,
-    'PIT_SL_HAS': -0.356659,
-    'PIT_COUNT': 0.300486,
-    'HSC_AM_IP': 0.021557,
-    'HSC_AM_BF': -0.002095,
-    'HSC_AM_PIT_HR': -0.0728,
-    'HSC_AM_PIT_ERA': -0.169831,
+    'STU': 0.005353,
+    'HRA': 0.042997,
+    'PIT_CON': 0.062618,
+    'PBABIP': 0.012032,
+    'STM': 0.015757,
+    'AGE': -0.205255,
+    'velo_mid': 0.047486,
+    'RISK_ORD': -0.085765,
+    'COMP_ORD': 0.020351,
+    'HSC_MULT': -0.489206,
+    'SLOT_ORD': -0.022577,
+    'PIT_FB_GR_VAL': 0.019699,
+    'PIT_CH_VAL': 0.017444,
+    'PIT_SI_VAL': 0.019991,
+    'PIT_SL_VAL': 0.017220,
+    'PIT_CB_VAL': 0.016378,
+    'PIT_SP_VAL': 0.015086,
+    'PIT_CT_VAL': 0.018163,
+    'PIT_FO_VAL': 0.019898,
+    'PIT_CC_VAL': 0.018706,
+    'PIT_SC_VAL': 0.022117,
+    'PIT_KC_VAL': 0.015169,
+    'PIT_KN_VAL': 0.010094,
+    'PIT_COUNT': -0.428609,
+    'HSC_AM_IP': 0.019717,
+    'HSC_AM_BF': -0.001881,
+    'HSC_AM_PIT_HR': -0.077863,
+    'HSC_AM_PIT_ERA': -0.200115,
 }
 
 _F2_BATTER_INTERCEPT = -2.214789

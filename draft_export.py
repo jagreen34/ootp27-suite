@@ -41,25 +41,25 @@ PIT_STAT_COLS = [
 # ALL pitch-grade columns — using the EXACT processed names from acquisitions
 # PLAYER_RENAMES (verified against the real draft-pool export). prep_data renames
 # the short CSV names (FB/CB/SP/FO/SC/KC/KN...) → PIT_* BEFORE build_board runs, so
-# by the time this export sees the row, columns are in PIT_* form. The model scores
-# only FB/CH/SI/SL; the rest (curve/splitter/screw/etc.) are model-blind but often
-# 80-grade in the AC — surfaced here as raw DISPLAY columns + an OffModelBest flag.
+# by the time this export sees the row, columns are in PIT_* form. F2 RETRAIN:
+# the value model now scores ALL 12 grades (flat, free coefs) — nothing is
+# model-blind. All 12 surfaced as DISPLAY columns and scored.
 ALL_PITCH_COLS = [
     ('PIT_FB_GR', 'FB'),    # fastball  (modeled)
     ('PIT_SI',    'SI'),    # sinker    (modeled)
     ('PIT_CT',    'CT'),    # cutter
-    ('PIT_CB',    'CB'),    # curveball — model-blind, often 80
+    ('PIT_CB',    'CB'),    # curveball  (modeled)
     ('PIT_SL',    'SL'),    # slider    (modeled)
     ('PIT_CH',    'CH'),    # changeup  (modeled)
-    ('PIT_SP',    'SP'),    # splitter  — model-blind, often 80
+    ('PIT_SP',    'SP'),    # splitter   (modeled)
     ('PIT_FO',    'FO'),    # forkball
     ('PIT_CC',    'CC'),    # circle change
     ('PIT_SC',    'SC'),    # screwball
     ('PIT_KC',    'KC'),    # knuckle curve
     ('PIT_KN',    'KN'),    # knuckleball
 ]
-# which four the F2 value model actually scores (for the OffModelBest flag)
-MODELED_PITCHES = {'FB', 'SI', 'SL', 'CH'}
+# F2 RETRAIN: value model now scores ALL 12 pitch grades (flat, free coefs).
+# OffModelBest flag RETIRED — no pitch is model-blind anymore.
 
 
 def _pitch_col(row, col):
@@ -191,18 +191,9 @@ def board_to_dataframe(rows: list[dict], pool_df: pd.DataFrame) -> pd.DataFrame:
             # A31 effective ceiling per developing rating (min(pot, cur+age_cap))
             for cur_c, pot_c, label in PIT_DEV_RATINGS:
                 rec[label] = eff_ceiling(r.get(cur_c), r.get(pot_c), x['age'])
-            # ALL 12 pitch grades as display columns (model scores only 4)
-            best_grade, best_label, best_modeled = 0, '', True
+            # ALL 12 pitch grades as display columns (F2 RETRAIN scores all 12)
             for col, label in ALL_PITCH_COLS:
-                v = _pitch_col(r, col)
-                rec[label] = v
-                g = _s(v, 0)
-                if g > best_grade:
-                    best_grade, best_label = g, label
-                    best_modeled = label in MODELED_PITCHES
-            # FLAG: best pitch is one the value model can't see (curve/split/etc.)
-            rec['OffModelBest'] = (best_label if (best_grade >= 45 and not best_modeled)
-                                   else '')
+                rec[label] = _pitch_col(r, col)
         else:
             for col, label in BAT_RATING_COLS:
                 rec[label] = _rating(r, col)
