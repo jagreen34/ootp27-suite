@@ -80,6 +80,7 @@ from my_team import build_roster_table
 from rating_scale import _convert_1to100_to_2080   # B3.1: shared scale toggle
 import park_fit as pf   # A22 hitter Park Fit Δ — shared additive lens
 import edge_confidence as ec   # Edge Stability + Total Value (opt-in composite lens)
+import pitch_dev as pdv         # A41/A43 pitch-development lens (mirage flag + confidence)
 
 # A6: Fragile → −40% projected value.
 FRAGILE_VALUE_MULT = 0.60
@@ -291,6 +292,16 @@ def build_board(pool_df: pd.DataFrame, league: League, state: dict) -> list[dict
                          glove=glove_local, parkfit=parkfit_local,
                          conf_floor=state['conf_floor'], base=state['tval_base'])
 
+        # A41/A43 pitch-development lens (additive; pitchers only). Classifies the
+        # projected arsenal into real vs mirage pitches and, for arms, folds the
+        # mirage share into the SAME bounded confidence multiplier edge uses — it
+        # lowers trust, never mutates F2 value (no calibrated mirage→WAR factor).
+        pd_ann = pdv.annotate(r, is_pit=is_pit)
+        if is_pit and pd_ann['pdev_reliability'] is not None:
+            eb['conf'] = min(eb['conf'],
+                             ec.confidence_mult(pd_ann['pdev_reliability'],
+                                                floor=state['conf_floor']))
+
         rows.append({
             'row':       r,
             'name':      str(r.get('Name', '')),
@@ -328,6 +339,12 @@ def build_board(pool_df: pd.DataFrame, league: League, state: dict) -> list[dict
             'edge_reason':  eb['edge_reason'],
             'edge_glyph':   eb['edge_glyph'],
             'edge_drivers': eb['edge_drivers'],
+            # ── A41/A43 pitch-development lens (pitchers only; additive) ──
+            'pdev_glyph':   pd_ann['pdev_glyph'],
+            'pdev_flag':    pd_ann['pdev_flag'],
+            'pdev_real':    pd_ann['pdev_real'],
+            'pdev_mirage':  pd_ann['pdev_mirage'],
+            'pdev_share':   pd_ann['pdev_share'],
             'grade_flags':  eb['grade_flags'],
             'conf':         eb['conf'],
             'tval':         eb['tval'],
