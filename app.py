@@ -1,8 +1,67 @@
 """
 OOTP 27 Evaluation Suite — v1.0
 Flat navigation | v15.17 registry locked | SQLite persistence | Docker-ready
+
+Access gate: a shared-password check runs BEFORE anything else renders. The
+password is read from st.secrets["app_password"] (mount .streamlit/secrets.toml
+into the container) OR the APP_PASSWORD environment variable as a fallback.
 """
+import os
 import streamlit as st
+
+# set_page_config MUST be the first Streamlit call.
+st.set_page_config(
+    page_title="OOTP 27 Suite",
+    page_icon="⚾",
+    layout="wide"
+)
+
+
+# ── ACCESS GATE ───────────────────────────────────────────────────────────────
+# Runs before any other Streamlit command or heavy import, so nothing renders
+# and no data loads until the shared league password is entered. Reads the
+# password from st.secrets first, then the APP_PASSWORD env var (Docker-friendly).
+def _expected_password():
+    try:
+        if "app_password" in st.secrets:
+            return st.secrets["app_password"]
+    except Exception:
+        pass
+    return os.environ.get("APP_PASSWORD")
+
+
+def check_password() -> bool:
+    expected = _expected_password()
+    # Fail loud (not open): if no password is configured, block rather than allow.
+    if not expected:
+        st.error(
+            "Access is not configured: set `app_password` in "
+            "`.streamlit/secrets.toml` or the `APP_PASSWORD` environment variable."
+        )
+        return False
+
+    def entered():
+        if st.session_state.get("pw") == expected:
+            st.session_state["auth_ok"] = True
+        else:
+            st.session_state["auth_ok"] = False
+        st.session_state.pop("pw", None)   # never keep the typed password around
+
+    if st.session_state.get("auth_ok"):
+        return True
+
+    st.title("⚾ OOTP 27 Suite")
+    st.text_input("Password", type="password", key="pw", on_change=entered)
+    if st.session_state.get("auth_ok") is False:
+        st.error("Incorrect password")
+    return False
+
+
+if not check_password():
+    st.stop()
+# ── everything below runs ONLY once authenticated ─────────────────────────────
+
+
 import pandas as pd
 import db
 import acquisitions as acq
@@ -14,12 +73,6 @@ import development as dev
 import roster_construction_ui as rcu
 import player_lookup as pl
 import player_card as pc
-
-st.set_page_config(
-    page_title="OOTP 27 Suite",
-    page_icon="⚾",
-    layout="wide"
-)
 
 SECTIONS = [
     "📊 My Team",
@@ -88,6 +141,7 @@ elif pre_dl is False:
 st.sidebar.markdown("---")
 section = st.sidebar.radio("🛠️ Section", SECTIONS, key='section')
 st.sidebar.markdown("---")
+st.sidebar.button("🔒 Log out", on_click=lambda: st.session_state.update(auth_ok=False))
 st.sidebar.caption("Return to [home](/)")
 
 if section == "🔄 Acquisitions":
