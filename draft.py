@@ -546,6 +546,7 @@ def _render_board_tab(league, rows, state, pot_active=True, def_active=True,
             'Fit':          _fit_cell(x),
             'Career WAR':   x['career'],
             'Disc WAR':     (x['disc'] if pot_active else x['career']),
+            'Mir':          x.get('pdev_glyph', ''),   # A41/A43 pitch-dev: ■ real · ◧ mixed · □ mirage (pitchers only; blank for bats)
             'Total':        x['tval'],
             'Conf':         (f"{x['edge_glyph']} {x['edge']:.2f}" if x['edge_ok'] else '⚠'),
             'Growth-bet':   (f"{_gb_glyph(gb)} +{gb:.2f}".strip() if (pot_active and gb > 0)
