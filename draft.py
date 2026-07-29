@@ -297,6 +297,8 @@ def build_board(pool_df: pd.DataFrame, league: League, state: dict) -> list[dict
         # mirage share into the SAME bounded confidence multiplier edge uses — it
         # lowers trust, never mutates F2 value (no calibrated mirage→WAR factor).
         pd_ann = pdv.annotate(r, is_pit=is_pit)
+        if is_pit and pd_ann['pdev_flag']:
+            flags.append(pd_ann['pdev_flag'].upper())   # MIRAGE / MIRAGE? into the shared flags string
         if is_pit and pd_ann['pdev_reliability'] is not None:
             eb['conf'] = min(eb['conf'],
                              ec.confidence_mult(pd_ann['pdev_reliability'],
@@ -958,6 +960,12 @@ def _render_grades_tab(rows):
         rec['CON'] = int(_s(r.get('PIT_CON', 0)))
         rec['CON→'] = f"+{int(pitcher_promised_con_growth(r))}"
         rec['SP-able'] = '✓' if not x['rp_ceiling'] else ''
+        # A41/A43 pitch-development: shape-glyph + real/mirage count (colorblind-safe).
+        # ■ real arsenal · ◧ mixed · □ mirage ceiling. Count = developing pitches that
+        # clear the floor vs. mirages that don't. Blank when unclassifiable.
+        _gl = x.get('pdev_glyph', '')
+        _rl = x.get('pdev_real', ''); _mr = x.get('pdev_mirage', '')
+        rec['Mirage'] = (f"{_gl} {_rl}R/{_mr}M" if _gl != '' and _rl != '' else '')
         rec['Flags'] = x['flags']
         table.append(rec)
     st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
