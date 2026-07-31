@@ -309,6 +309,7 @@ def _build_player_row(row_dict: dict) -> dict:
         'Age':      age,
         'F1':       round(f1, 2),
         'F2':       round(f2, 2),
+        'Growth':   round(f2 - f1, 2),   # development bet: projected ceiling minus current value
         'TV':       tv,
         'Control':  control,
         'Svc_Yrs':  svc_yrs,
@@ -779,7 +780,7 @@ def _render_roster_tab(active_tbl, reserve_tbl, full_tbl):
     ])
 
     bat_cols = [c for c in [
-        'Name', 'POS', 'Age', 'F1', 'TV', 'Control', 'Svc_Yrs', 'Arb',
+        'Name', 'POS', 'Age', 'F1', 'F2', 'Growth', 'TV', 'Control', 'Svc_Yrs', 'Arb',
         'Salary', 'Yrs_Left',
         'CON', 'POW', 'GAP', 'EYE', 'SPE',
         'Park Fit Δ',
@@ -787,7 +788,7 @@ def _render_roster_tab(active_tbl, reserve_tbl, full_tbl):
     ] if c in bat_tbl.columns]
 
     pit_cols = [c for c in [
-        'Name', 'POS', 'Age', 'F1', 'TV', 'Control', 'Svc_Yrs', 'Arb',
+        'Name', 'POS', 'Age', 'F1', 'F2', 'Growth', 'TV', 'Control', 'Svc_Yrs', 'Arb',
         'Salary', 'Yrs_Left',
         'STU', 'MOV', 'PIT_CON', 'STM', 'CNT_eff',
         'Flags',
