@@ -33,7 +33,7 @@ from acquisitions import (
     batter_f1, pitcher_f1, sp_f1, rp_f1,
     off_f1, def_war, pos_adj,
     trade_value,
-    f2_war,
+    f2_war, f2_discounted_war, draft_pool_has_potentials,
     cnt_eff_pitches, min_eff_pitch,
     top_pitch_grade, secondary_pitch_count,
     passes_pitch_gate, thin_out_pitch, PITCH_GATE_DEFAULTS,
@@ -237,7 +237,12 @@ def _build_player_row(row_dict: dict) -> dict:
     # F2 — rating-based projected WAR (no accumulated stats / IP needed). This is
     # the stats-independent quality signal; need/surplus detection uses it for
     # pitchers because pitcher F1 is IP-driven and collapses negative at 0 IP.
-    f2 = f2_war(row_dict) if pos in (set(PITCHER_POSITIONS) | set(BATTER_POSITIONS)) else 0.0
+    _scoreable = pos in (set(PITCHER_POSITIONS) | set(BATTER_POSITIONS))
+    f2 = f2_war(row_dict) if _scoreable else 0.0
+    # Disc — F2 re-scored on EXPECTED-MATURE (delivery-discounted) ratings.
+    # Growth = Disc - F2 keeps both sides in the SAME ratings-based model so the
+    # AGE term cancels; never Disc - F1 (F1 is stats-based -> residual artifact).
+    disc = f2_discounted_war(row_dict) if _scoreable else 0.0
 
     # Service / control
     ml_yrs   = _s(row_dict.get('ML_YRS', 0))
@@ -309,7 +314,8 @@ def _build_player_row(row_dict: dict) -> dict:
         'Age':      age,
         'F1':       round(f1, 2),
         'F2':       round(f2, 2),
-        'Growth':   round(f2 - f1, 2),   # development bet: projected ceiling minus current value
+        'Disc':     round(disc, 2),
+        'Growth':   round(disc - f2, 2),  # growth bet: delivery-discounted mature minus current ratings
         'TV':       tv,
         'Control':  control,
         'Svc_Yrs':  svc_yrs,
@@ -774,13 +780,23 @@ def _render_roster_tab(active_tbl, reserve_tbl, full_tbl):
     bat_tbl = tbl[tbl['POS'].isin(BATTER_POSITIONS)]
     pit_tbl = tbl[tbl['POS'].isin(PITCHER_POSITIONS)]
 
+    # Fail-loud-visible: with no potential columns the delivery layer returns
+    # discounted == current, so Growth collapses to 0.00 for EVERY player. That
+    # is a dead column, not a finding — say so rather than let it read as truth.
+    if not draft_pool_has_potentials(tbl):
+        st.warning(
+            "Growth INACTIVE - no potential (_P) columns in this upload. "
+            "Disc == F2 and Growth == 0.00 for all players by construction. "
+            "Re-export with potentials to activate the growth bet."
+        )
+
     sub_bat, sub_pit = st.tabs([
         f"⚾ Batters ({len(bat_tbl)})",
         f"🥎 Pitchers ({len(pit_tbl)})",
     ])
 
     bat_cols = [c for c in [
-        'Name', 'POS', 'Age', 'F1', 'F2', 'Growth', 'TV', 'Control', 'Svc_Yrs', 'Arb',
+        'Name', 'POS', 'Age', 'F1', 'F2', 'Disc', 'Growth', 'TV', 'Control', 'Svc_Yrs', 'Arb',
         'Salary', 'Yrs_Left',
         'CON', 'POW', 'GAP', 'EYE', 'SPE',
         'Park Fit Δ',
@@ -788,7 +804,7 @@ def _render_roster_tab(active_tbl, reserve_tbl, full_tbl):
     ] if c in bat_tbl.columns]
 
     pit_cols = [c for c in [
-        'Name', 'POS', 'Age', 'F1', 'F2', 'Growth', 'TV', 'Control', 'Svc_Yrs', 'Arb',
+        'Name', 'POS', 'Age', 'F1', 'F2', 'Disc', 'Growth', 'TV', 'Control', 'Svc_Yrs', 'Arb',
         'Salary', 'Yrs_Left',
         'STU', 'MOV', 'PIT_CON', 'STM', 'CNT_eff',
         'Flags',
