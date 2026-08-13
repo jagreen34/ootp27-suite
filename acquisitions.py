@@ -24,7 +24,7 @@ import streamlit as st
 from db import League, compute_control_window, compute_arb_status
 from rating_scale import _convert_1to100_to_2080   # B3.1: shared scale toggle
 from dev_constants import (                        # VALUE-MODEL RETRAIN (Open Items #4/#5)
-    BATTER_WEIGHTS, PITCHER_WEIGHTS,
+    BATTER_WEIGHTS, PITCHER_WEIGHTS_ACTIVE,
     BATTER_LEAGUE_MEANS, PITCHER_LEAGUE_MEANS,
     WINS_PER_SD, TEAM_SD, TEAM_PA, TEAM_IP,
     REPLACEMENT_OFFSET_WINS, REPLACEMENT_VOLUME,
@@ -672,14 +672,20 @@ def _pitcher_rate_wins(row, replacement_role: str) -> tuple[float, float]:
     """
     Shared pitcher chain (Open Items #4, VALUE_MODEL_RETRAIN_HANDOFF.md).
     Replaces the retired SP/RP F1.1 v-splits + archetype regression (CV R²
-    0.779/0.571, WAR-fit) with the LOCKED A48/A53 team-wins weights
-    (PITCHER_WEIGHTS — STU/MOV/CON, dev_constants.py) routed through the
-    LOCKED team-wins-per-SD conversion (WINS_PER_SD['ERA+']=5.69,
-    team_seasons_all.csv). This is a real simplification, not just a
-    re-target: the v-split and power/FB-K archetype terms are dropped, not
-    ported. See handoff note on the A27-vs-PITCHER_WEIGHTS tension (STU
-    excluded from A27's screen, included here per the handoff) —
-    unreconciled, flagged in dev_constants.py.
+    0.779/0.571, WAR-fit) with a MOV/CON-only screen (PITCHER_WEIGHTS_ACTIVE,
+    dev_constants.py) routed through the LOCKED team-wins-per-SD conversion
+    (WINS_PER_SD['ERA+']=5.69, team_seasons_all.csv). This is a real
+    simplification, not just a re-target: the v-split and power/FB-K
+    archetype terms are dropped, not ported.
+
+    RESOLVED 2026-08-13: STU dropped from the weight set. The original
+    handoff specified STU/MOV/CON (A48/A53's "team-wins weights"), but that
+    conflicted with two locked findings — A27's current-value pitcher screen
+    explicitly excludes STU as a derived roll-up (MOV load-bearing, not
+    arsenal), and A48/A32/A34 confirm STU is engine-DERIVED from velocity +
+    pitch grades + arsenal depth, not an independent primitive — scoring it
+    alongside MOV/CON risked double-counting the same arsenal signal. See
+    dev_constants.py's PITCHER_WEIGHTS_ACTIVE comment for the full reasoning.
 
     FIXES THE F1 IP-COLLAPSE (Open Items #4): the old regression's intercept
     was fit against full-season IP, so at spring volume (e.g. 11 IP) it read
@@ -696,13 +702,12 @@ def _pitcher_rate_wins(row, replacement_role: str) -> tuple[float, float]:
     confidence = IP / FULL_CONFIDENCE_IP, capped at 1.0 — NOT baked into WAR
     itself (that would silently distort the number); report both.
     """
-    stu = _s(row.get('STU', 0))
+    stu = _s(row.get('STU', 0))   # read for display/other callers; NOT scored here (see docstring)
     mov = _s(row.get('MOV', 0))
     con = _s(row.get('PIT_CON', 0))
     delta_era = (
-        (PITCHER_WEIGHTS['STU'] / 10) * (stu - PITCHER_LEAGUE_MEANS['STU'])
-      + (PITCHER_WEIGHTS['MOV'] / 10) * (mov - PITCHER_LEAGUE_MEANS['MOV'])
-      + (PITCHER_WEIGHTS['CON'] / 10) * (con - PITCHER_LEAGUE_MEANS['CON'])
+        (PITCHER_WEIGHTS_ACTIVE['MOV'] / 10) * (mov - PITCHER_LEAGUE_MEANS['MOV'])
+      + (PITCHER_WEIGHTS_ACTIVE['CON'] / 10) * (con - PITCHER_LEAGUE_MEANS['CON'])
     )
     ip = _s(row.get('IP', 0))
     wins_above_avg = delta_era * (ip / TEAM_IP) * (WINS_PER_SD['ERA+'] / TEAM_SD['ERA+'])

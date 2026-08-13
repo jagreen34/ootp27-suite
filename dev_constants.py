@@ -69,9 +69,24 @@ BATTER_WEIGHTS = {
     "AVK":   1.4,   # near-inert; weakest team separator on the board
 }
 
-# A48/A53 team-wins weights -- pitcher tools. STU is DERIVED (engine-computed
-# from the arsenal): read it, never project or inject it.
+# A48/A53 team-wins weights -- pitcher tools, AS ORIGINALLY HANDED OFF. Kept
+# for provenance; NOT what the F1 chain scores (see PITCHER_WEIGHTS_ACTIVE).
 PITCHER_WEIGHTS = {"STU": 1.7, "MOV": 1.6, "CON": 1.3}
+
+# RESOLVED (Jeff, 2026-08-13): PITCHER_WEIGHTS' STU term conflicted with two
+# locked findings and is DROPPED from the active F1 chain.
+#   (1) A27 (locked current-value pitcher screen) builds its ordering as
+#       MOV -> CON -> arsenal(best-two) -> STM and explicitly excludes STU
+#       as a derived roll-up, not a primary input.
+#   (2) A48/A32/A34: STU is ENGINE-DERIVED from velocity + pitch grades +
+#       arsenal depth -- it is not an independent primitive. Scoring it
+#       alongside MOV/CON (which correlate with arsenal quality themselves)
+#       risks double-counting the same underlying arsenal signal twice.
+# PITCHER_WEIGHTS above is kept as the historical record of what the retrain
+# handoff specified; PITCHER_WEIGHTS_ACTIVE is what acquisitions.py actually
+# scores. If a future thread wants an arsenal-quality term back in (A27's
+# "best-two"), it belongs here as its own tagged weight, not as STU.
+PITCHER_WEIGHTS_ACTIVE = {"MOV": 1.6, "CON": 1.3}
 
 # Only MOV and CON take the age budget. Pitch grades barely develop (A48).
 PITCHER_DEVELOPING_TOOLS = ("MOV", "CON")
@@ -159,8 +174,13 @@ TEAM_PA = 6259
 TEAM_IP = 1459
 
 # AC-NATIVE league-mean ratings -- player_search export, ORG != '-' (rostered
-# players only), n=620 batters / 512 pitchers, Aug 2026 snapshot. This is the
-# centering point for the weighted-score -> metric-point-delta conversion.
+# players only), n=620 batters / 512 pitchers.
+# SNAPSHOT DATE: 2026-08-13. FROZEN -- not auto-refreshed. The AC's rating
+# distribution moves slowly within a season, so this is fine through the
+# current season; it goes stale across offseasons as the player pool turns
+# over (draft classes in, retirements/cuts out). Re-derive from a current
+# player_search export at the start of each new season -- there is no
+# refresh mechanism yet; recompute manually and update this date.
 # Deliberately NOT the K-T multiverse mean: K-T is park-neutral by
 # construction (Handoff Sec 9); this is the real AC pool, with the Quakers'
 # and every other park's own factors already inside the wRC+/ERA+ outcomes
@@ -168,31 +188,34 @@ TEAM_IP = 1459
 BATTER_LEAGUE_MEANS = {
     "POW": 37.46, "EYE": 44.82, "BABIP": 45.77, "GAP": 42.83, "AVK": 48.13,
 }
-PITCHER_LEAGUE_MEANS = {"STU": 45.41, "MOV": 48.67, "CON": 40.98}
+PITCHER_LEAGUE_MEANS = {"STU": 45.41, "MOV": 48.67, "CON": 40.98}   # STU kept for reference; unused by the active chain
 
 # WARNING -- UNIT ASSUMPTION, NOT independently verified. BATTER_WEIGHTS'
 # unit ("wRC+ points per 10 rating points") is documented at A44/A53.
-# PITCHER_WEIGHTS is documented only as "team-wins weights" (A48/A53) -- no
-# per-rating-point unit is stated anywhere in the Log/Spec. Treated here as
-# "ERA+ points per 10 rating points" BY ANALOGY to the batter convention,
-# not by citation. If pitcher F1 output looks off-scale against known AC WAR
-# totals, check this assumption first.
+# PITCHER_WEIGHTS_ACTIVE is documented only as "team-wins weights" (A48/A53)
+# -- no per-rating-point unit is stated anywhere in the Log/Spec. Treated
+# here as "ERA+ points per 10 rating points" BY ANALOGY to the batter
+# convention, not by citation. If pitcher F1 output looks off-scale against
+# known AC WAR totals, check this assumption first.
 #
-# Also unreconciled: A27 (locked current-value pitcher screen) orders
-# MOV -> CON -> best-two-pitches -> STM and explicitly excludes STU as a
-# derived roll-up, not a primary input. PITCHER_WEIGHTS (A48/A53, used here
-# per the retrain handoff) puts STU first. Both are locked findings; nothing
-# in the registry reconciles the two screens. Using PITCHER_WEIGHTS per the
-# handoff's explicit instruction -- flagged, not resolved.
+# RESOLVED 2026-08-13: the A27-vs-STU tension (see PITCHER_WEIGHTS_ACTIVE
+# above) is fixed -- STU dropped, MOV/CON only, consistent with A27's
+# ordering and A48/A32/A34's derived-STU finding.
 PITCHER_WEIGHT_UNIT_ASSUMED = True
 
 # Replacement-level offset, full-season-volume, wins below a league-AVERAGE
 # player at that role. WARNING -- ASSUMED, NOT AC-DERIVED. Standard
 # sabermetric convention (SP ~2 WAR/200 IP, RP ~1 WAR/60 IP below average
-# defines replacement). The suite's OLD sp_war_estimate() anchors a
-# different number (bare-minimum arsenal = 1.58 WAR, A14/A15) but that was
-# calibrated against the retired WAR-fit GB model at implicit full-season
-# volume and is NOT directly portable into this chain -- noted, not merged.
+# defines replacement). Kept flagged per methodology rule 9 (Log, v15.39):
+# "Never let an unmeasured constant carry a conclusion... if a finding flips
+# under a plausible alternative value of an assumed parameter, fit it or
+# report the sensitivity." LOW IMPACT, not urgent to fit: this offset is a
+# flat additive shift per role, so it does not reorder any pitcher against
+# another at the same role -- it only affects absolute WAR level, not rank.
+# The suite's OLD sp_war_estimate() anchors a different number (bare-minimum
+# arsenal = 1.58 WAR, A14/A15) but that was calibrated against the retired
+# WAR-fit GB model at implicit full-season volume and is NOT directly
+# portable into this chain -- noted, not merged.
 # Batters need no separate constant: POS_ADJ_CONSTANTS (A26, UNCHANGED,
 # "reconstructs absolute WAR") already supplies the average-to-replacement
 # positional shift and stays wired in unchanged via pos_adj().
