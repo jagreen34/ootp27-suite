@@ -31,7 +31,8 @@ from db import League, compute_control_window, compute_arb_status
 from acquisitions import (
     prep_data,
     batter_f1, pitcher_f1, sp_f1, rp_f1,
-    off_f1, def_war, pos_adj,
+    off_f1, off_f1_confidence, def_war, pos_adj,
+    pitcher_f1_confidence, sp_fip_minus, era_fip_luck_flag,   # RETRAIN additions
     trade_value,
     f2_war, f2_discounted_war, draft_pool_has_potentials,
     cnt_eff_pitches, min_eff_pitch,
@@ -226,17 +227,23 @@ def _build_player_row(row_dict: dict) -> dict:
     pos = str(row_dict.get('POS', ''))
     age = int(_s(row_dict.get('AGE', row_dict.get('Age', 25))))
 
-    # F1 by role
+    # F1 by role. RETRAIN (Open Items #4): F1 is now rate-based (wRC+/ERA+
+    # chain) instead of a direct WAR-fit regression, so it no longer collapses
+    # negative at low PA/IP — f1_confidence reports how much to trust it.
     if pos in PITCHER_POSITIONS:
         f1 = pitcher_f1(row_dict)
+        f1_confidence = pitcher_f1_confidence(row_dict)
     elif pos in BATTER_POSITIONS:
         f1 = batter_f1(row_dict)
+        f1_confidence = off_f1_confidence(row_dict)
     else:
         f1 = 0.0
+        f1_confidence = 0.0
 
-    # F2 — rating-based projected WAR (no accumulated stats / IP needed). This is
-    # the stats-independent quality signal; need/surplus detection uses it for
-    # pitchers because pitcher F1 is IP-driven and collapses negative at 0 IP.
+    # F2 — rating-based projected WAR (no accumulated stats / IP needed). This
+    # remains the stats-independent quality signal for need/surplus detection;
+    # F1 no longer collapses at low IP (RETRAIN), but F2 is still the cleaner
+    # signal at 0 IP / 0 PA where F1_confidence would read exactly 0.
     _scoreable = pos in (set(PITCHER_POSITIONS) | set(BATTER_POSITIONS))
     f2 = f2_war(row_dict) if _scoreable else 0.0
     # Disc — F2 re-scored on EXPECTED-MATURE (delivery-discounted) ratings.
@@ -288,6 +295,12 @@ def _build_player_row(row_dict: dict) -> dict:
         # was the inverted-proxy trap — more pitches ≠ better.)
         if pos == 'SP' and thin_out_pitch(row_dict):
             flags.append('THIN-OUT-PITCH')
+        # RETRAIN additions (Open Items #4/#5)
+        if f1_confidence < 0.5:
+            flags.append('LOW-CONFIDENCE-F1')       # thin IP — trust F2 over F1
+        era_luck = era_fip_luck_flag(row_dict)
+        if era_luck:
+            flags.append(era_luck)
         flex = ''
         luck = ''
     else:
@@ -302,6 +315,8 @@ def _build_player_row(row_dict: dict) -> dict:
             flags.append('STRONG-SELL-HIGH')
         elif luck == 'SELL_HIGH':
             flags.append('SELL-HIGH')
+        if f1_confidence < 0.5:                     # RETRAIN (Open Items #4)
+            flags.append('LOW-CONFIDENCE-F1')        # thin PA — trust F2 over F1
 
     waivers = str(row_dict.get('ON_WAIVERS', '')).lower() in ('1', 'true', 'yes')
     is_dfa  = str(row_dict.get('IS_DFA', '')).lower() in ('1', 'true', 'yes')
@@ -313,10 +328,12 @@ def _build_player_row(row_dict: dict) -> dict:
         'POS':      pos,
         'Age':      age,
         'F1':       round(f1, 2),
+        'F1_Conf':  round(f1_confidence, 2),  # RETRAIN: 0-1, IP/PA-based (Open Items #4)
         'F2':       round(f2, 2),
         'Disc':     round(disc, 2),
         'Growth':   round(disc - f2, 2),  # growth bet: delivery-discounted mature minus current ratings
         'TV':       tv,
+        'FIP-':     round(sp_fip_minus(row_dict), 1) if pos in PITCHER_POSITIONS else None,  # RETRAIN (Open Items #5)
         'Control':  control,
         'Svc_Yrs':  svc_yrs,
         'Arb':      arb,
@@ -796,7 +813,7 @@ def _render_roster_tab(active_tbl, reserve_tbl, full_tbl):
     ])
 
     bat_cols = [c for c in [
-        'Name', 'POS', 'Age', 'F1', 'F2', 'Disc', 'Growth', 'TV', 'Control', 'Svc_Yrs', 'Arb',
+        'Name', 'POS', 'Age', 'F1', 'F1_Conf', 'F2', 'Disc', 'Growth', 'TV', 'Control', 'Svc_Yrs', 'Arb',
         'Salary', 'Yrs_Left',
         'CON', 'POW', 'GAP', 'EYE', 'SPE',
         'Park Fit Δ',
@@ -804,7 +821,7 @@ def _render_roster_tab(active_tbl, reserve_tbl, full_tbl):
     ] if c in bat_tbl.columns]
 
     pit_cols = [c for c in [
-        'Name', 'POS', 'Age', 'F1', 'F2', 'Disc', 'Growth', 'TV', 'Control', 'Svc_Yrs', 'Arb',
+        'Name', 'POS', 'Age', 'F1', 'F1_Conf', 'FIP-', 'F2', 'Disc', 'Growth', 'TV', 'Control', 'Svc_Yrs', 'Arb',
         'Salary', 'Yrs_Left',
         'STU', 'MOV', 'PIT_CON', 'STM', 'CNT_eff',
         'Flags',
