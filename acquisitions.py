@@ -23,6 +23,13 @@ import streamlit as st
 
 from db import League, compute_control_window, compute_arb_status
 from rating_scale import _convert_1to100_to_2080   # B3.1: shared scale toggle
+from dev_constants import (                        # VALUE-MODEL RETRAIN (Open Items #4/#5)
+    BATTER_WEIGHTS, PITCHER_WEIGHTS,
+    BATTER_LEAGUE_MEANS, PITCHER_LEAGUE_MEANS,
+    WINS_PER_SD, TEAM_SD, TEAM_PA, TEAM_IP,
+    REPLACEMENT_OFFSET_WINS, REPLACEMENT_VOLUME,
+    FULL_CONFIDENCE_PA, FULL_CONFIDENCE_IP,
+)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -363,33 +370,51 @@ def _s(v, d=0.0) -> float:
 # ── Batter F1: OFF component ──────────────────────────────────────────────────
 def off_f1(row) -> float:
     """
-    Batter F1 — offensive WAR component.
-    Uses validated v26 unstandardized coefficients on 20-80 rating scale.
-    The v27 refit produces the same structural order with higher R² (0.591 vs
-    0.447) due to the OFF/DEF decomposition; coefficient magnitudes are
-    compatible since the rating scale is unchanged.
+    Batter F1 — offensive wins-above-average component. RETRAIN (Open Items
+    #4, VALUE_MODEL_RETRAIN_HANDOFF.md): replaces the old direct WAR-fit
+    regression with the LOCKED A44/A53 wRC+ weights (BATTER_WEIGHTS,
+    dev_constants.py — POW/EYE/BABIP/GAP/AVK) routed through the LOCKED
+    team-wins-per-SD conversion (WINS_PER_SD['wRC+']=5.84, team_seasons_all.csv,
+    4,200 team-seasons, joint R²=0.754). No new regression — the weights were
+    already fit; this function only recombines them correctly.
+
+    NEVER scores CON — A44 showed it's a ~50/50 BABIP+AvoidK composite whose
+    halves differ ~2.3x in value; scored separately here as BABIP and AVK.
+    SPE is dropped — SPE was in the old WAR-fit intercept, not in the A44/A53
+    wRC+ weight table this retrain is built on.
+
+    Centered on BATTER_LEAGUE_MEANS (AC-native, not K-T — see dev_constants.py)
+    and scaled by PA share of a team-average season (TEAM_PA), so a part-time
+    player's elite rate doesn't overweight against a full-time average bat.
+    Returns WINS ABOVE AVERAGE, not WAR — batter_f1() adds pos_adj() on top
+    for the average-to-replacement positional shift (A26, unchanged).
+
     NOTE: BAT_BABIP_RATING must be on the 20-80 integer scale, not decimal.
     """
-    con   = _s(row.get('CON'))
-    gap   = _s(row.get('GAP'))
     pow_  = _s(row.get('POW'))
     eye   = _s(row.get('EYE'))
-    spe   = _s(row.get('SPE'))
+    gap   = _s(row.get('GAP'))
     avk   = _s(row.get('AVK', 0))
     babip = _s(row.get('BAT_BABIP_RATING', row.get('BABIP', 50)))
     # Guard: if BABIP looks like a decimal stat, ignore it (use 50 as neutral)
     if babip < 1.0:
         babip = 50.0
 
-    # PROVISIONAL — AC→27 migration retune (A28 current-value batter re-weight, K-T;
-    # BABIP + AVK dropped; CON restored as co-anchor). babip/avk locals kept above but
-    # intentionally unused so the development.py off_f1 probe still resolves them to 0.
-    return (-10.431
-        + con  * 0.0914        # co-anchor (was 0.0379 — under-weighted)
-        + pow_ * 0.0651        # co-anchor (anchor)
-        + spe  * 0.0366
-        + gap  * 0.0339
-        + eye  * 0.0300)       # weak — ~half its old weight (do NOT anchor on eye)
+    delta_wrc = (
+        (BATTER_WEIGHTS['POW']   / 10) * (pow_  - BATTER_LEAGUE_MEANS['POW'])
+      + (BATTER_WEIGHTS['EYE']   / 10) * (eye   - BATTER_LEAGUE_MEANS['EYE'])
+      + (BATTER_WEIGHTS['BABIP'] / 10) * (babip - BATTER_LEAGUE_MEANS['BABIP'])
+      + (BATTER_WEIGHTS['GAP']   / 10) * (gap   - BATTER_LEAGUE_MEANS['GAP'])
+      + (BATTER_WEIGHTS['AVK']   / 10) * (avk   - BATTER_LEAGUE_MEANS['AVK'])
+    )
+    pa = _s(row.get('PA', 0))
+    return delta_wrc * (pa / TEAM_PA) * (WINS_PER_SD['wRC+'] / TEAM_SD['wRC+'])
+
+
+def off_f1_confidence(row) -> float:
+    """0-1 confidence in off_f1's estimate, from PA volume. NEW (retrain)."""
+    pa = _s(row.get('PA', 0))
+    return round(min(1.0, pa / FULL_CONFIDENCE_PA), 2)
 
 
 # ── Batter F1: DEF component ──────────────────────────────────────────────────
@@ -642,108 +667,122 @@ def batter_f1(row) -> float:
     return off_f1(row) + def_war(row, pos) + pos_adj(row, pos)
 
 
-# ── SP F1.1 — locked coefficients ────────────────────────────────────────────
+# ── Pitcher F1: shared rate->wins chain (RETRAIN) ─────────────────────────────
+def _pitcher_rate_wins(row, replacement_role: str) -> tuple[float, float]:
+    """
+    Shared pitcher chain (Open Items #4, VALUE_MODEL_RETRAIN_HANDOFF.md).
+    Replaces the retired SP/RP F1.1 v-splits + archetype regression (CV R²
+    0.779/0.571, WAR-fit) with the LOCKED A48/A53 team-wins weights
+    (PITCHER_WEIGHTS — STU/MOV/CON, dev_constants.py) routed through the
+    LOCKED team-wins-per-SD conversion (WINS_PER_SD['ERA+']=5.69,
+    team_seasons_all.csv). This is a real simplification, not just a
+    re-target: the v-split and power/FB-K archetype terms are dropped, not
+    ported. See handoff note on the A27-vs-PITCHER_WEIGHTS tension (STU
+    excluded from A27's screen, included here per the handoff) —
+    unreconciled, flagged in dev_constants.py.
+
+    FIXES THE F1 IP-COLLAPSE (Open Items #4): the old regression's intercept
+    was fit against full-season IP, so at spring volume (e.g. 11 IP) it read
+    -2 to -5, a counting-stat artifact, not a quality signal. This chain is
+    rate-based (STU/MOV/CON, no IP term in the quality half) and scales the
+    WINS contribution by IP share of a team season (TEAM_IP) — a thin-IP
+    arm now returns a small, real, IP-appropriate number instead of a
+    fabricated negative, with confidence reported separately so a caller can
+    flag "low confidence" instead of trusting a small-sample point estimate.
+
+    Returns (WAR, confidence). WAR = wins-above-average (STU/MOV/CON via the
+    ERA+ chain, IP-scaled) + a volume-scaled REPLACEMENT_OFFSET_WINS
+    (dev_constants.py — ASSUMED, not AC-derived; flagged there).
+    confidence = IP / FULL_CONFIDENCE_IP, capped at 1.0 — NOT baked into WAR
+    itself (that would silently distort the number); report both.
+    """
+    stu = _s(row.get('STU', 0))
+    mov = _s(row.get('MOV', 0))
+    con = _s(row.get('PIT_CON', 0))
+    delta_era = (
+        (PITCHER_WEIGHTS['STU'] / 10) * (stu - PITCHER_LEAGUE_MEANS['STU'])
+      + (PITCHER_WEIGHTS['MOV'] / 10) * (mov - PITCHER_LEAGUE_MEANS['MOV'])
+      + (PITCHER_WEIGHTS['CON'] / 10) * (con - PITCHER_LEAGUE_MEANS['CON'])
+    )
+    ip = _s(row.get('IP', 0))
+    wins_above_avg = delta_era * (ip / TEAM_IP) * (WINS_PER_SD['ERA+'] / TEAM_SD['ERA+'])
+    repl = REPLACEMENT_OFFSET_WINS[replacement_role] * (ip / REPLACEMENT_VOLUME[replacement_role])
+    war = wins_above_avg + repl
+    confidence = round(min(1.0, ip / FULL_CONFIDENCE_IP), 2)
+    return war, confidence
+
+
 def sp_f1(row) -> float:
-    """
-    SP F1.1 — v-splits + archetype interactions. CV R² = 0.779.
-    Falls back to v1 (no interactions) if v-split columns absent.
-    """
-    has_vsplits = all(c in row and _s(row.get(c)) != 0
-                      for c in ['STU_vL', 'STU_vR', 'MOV_vL', 'MOV_vR'])
-
-    if has_vsplits:
-        val = (-9.6198
-            + _s(row.get('STU_vL',    0)) * 0.0291
-            + _s(row.get('STU_vR',    0)) * 0.0392
-            + _s(row.get('MOV_vL',    0)) * 0.0048
-            + _s(row.get('MOV_vR',    0)) * 0.0318
-            + _s(row.get('PIT_CON_vL',0)) * 0.0161
-            + _s(row.get('PIT_CON_vR',0)) * 0.0249
-            + _s(row.get('STM',       0)) * (-0.0181)
-            + _s(row.get('IP',        0)) * 0.0306
-            + _s(row.get('PBABIP',    0)) * (-0.0240)
-            + _s(row.get('HRA',       0)) * 0.0387
-        )
-        # Archetype indicators
-        stu = _s(row.get('STU', 0))
-        mov = _s(row.get('MOV', 0))
-        con = _s(row.get('PIT_CON', 0))
-        k_pct = _s(row.get('PIT_K_PCT', 0))
-        gf    = str(row.get('PIT_GF', ''))
-        I_power = int(stu >= 50 and mov >= 50 and con <= 45)
-        I_fb_k  = int(gf in ('FB', 'EX FB') and k_pct >= 0.149)
-        val += (I_power * 0.0207
-              + I_power * stu * (-0.0242)
-              + I_power * mov * (-0.0183)
-              + I_power * con * 0.0519
-              + I_fb_k  * (-0.6261)
-              + I_fb_k  * stu * (-0.0476)
-              + I_fb_k  * mov * 0.0528
-              + I_fb_k  * _s(row.get('HRA', 0)) * 0.0173)
-    else:
-        # v1 fallback — no v-splits
-        val = (-9.6062
-            + _s(row.get('STU',    0)) * (0.0265 + 0.0315) / 2
-            + _s(row.get('MOV',    0)) * (0.0040 + 0.0299) / 2
-            + _s(row.get('PIT_CON',0)) * (0.0149 + 0.0289) / 2
-            + _s(row.get('STM',    0)) * (-0.0191)
-            + _s(row.get('IP',     0)) * 0.0315
-            + _s(row.get('PBABIP', 0)) * (-0.0303)
-            + _s(row.get('HRA',    0)) * 0.0399
-        )
-    return val
+    """SP F1 — wins-above-replacement (RETRAIN). See _pitcher_rate_wins."""
+    war, _ = _pitcher_rate_wins(row, 'SP')
+    return war
 
 
-# ── RP F1.1 — locked coefficients ────────────────────────────────────────────
+def sp_f1_confidence(row) -> float:
+    """0-1 confidence in sp_f1, from IP volume. NEW (retrain IP-collapse fix)."""
+    _, conf = _pitcher_rate_wins(row, 'SP')
+    return conf
+
+
 def rp_f1(row) -> float:
-    """
-    RP F1.1 — v-splits + archetype interactions. CV R² = 0.571.
-    Falls back to v1 if v-split columns absent.
-    """
-    has_vsplits = all(c in row and _s(row.get(c)) != 0
-                      for c in ['STU_vL', 'STU_vR', 'MOV_vL', 'MOV_vR'])
+    """RP F1 — wins-above-replacement (RETRAIN). See _pitcher_rate_wins."""
+    war, _ = _pitcher_rate_wins(row, 'RP')
+    return war
 
-    if has_vsplits:
-        val = (-4.6766
-            + _s(row.get('STU_vL',    0)) * 0.0230
-            + _s(row.get('STU_vR',    0)) * 0.0130
-            + _s(row.get('MOV_vL',    0)) * (-0.0041)
-            + _s(row.get('MOV_vR',    0)) * 0.0176
-            + _s(row.get('PIT_CON_vL',0)) * 0.0003
-            + _s(row.get('PIT_CON_vR',0)) * 0.0232
-            + _s(row.get('STM',       0)) * (-0.0004)
-            + _s(row.get('PIT_HLD',   0)) * (-0.0008)
-            + _s(row.get('IP',        0)) * 0.0151
-            + _s(row.get('PBABIP',    0)) * (-0.0013)
-            + _s(row.get('HRA',       0)) * 0.0221
-        )
-        stu = _s(row.get('STU', 0))
-        mov = _s(row.get('MOV', 0))
-        con = _s(row.get('PIT_CON', 0))
-        k_pct = _s(row.get('PIT_K_PCT', 0))
-        gf    = str(row.get('PIT_GF', ''))
-        I_power = int(stu >= 65 and mov >= 50 and con <= 50)
-        I_fb_k  = int(gf in ('FB', 'EX FB') and k_pct >= 0.174)
-        val += (I_power * (-3.2857)
-              + I_power * stu * 0.0216
-              + I_power * mov * 0.0018
-              + I_power * con * 0.0318
-              + I_fb_k  * (-0.0454)
-              + I_fb_k  * stu * (-0.0076)
-              + I_fb_k  * mov * (-0.0200)
-              + I_fb_k  * _s(row.get('HRA', 0)) * 0.0338)
-    else:
-        val = (-4.5281
-            + _s(row.get('STU',    0)) * (0.0241 + 0.0112) / 2
-            + _s(row.get('MOV',    0)) * (-0.0064 + 0.0168) / 2
-            + _s(row.get('PIT_CON',0)) * (0.0000 + 0.0259) / 2
-            + _s(row.get('STM',    0)) * (-0.0004)
-            + _s(row.get('PIT_HLD',0)) * (-0.0008)
-            + _s(row.get('IP',     0)) * 0.0152
-            + _s(row.get('PBABIP', 0)) * (-0.0023)
-            + _s(row.get('HRA',    0)) * 0.0240
-        )
-    return val
+
+def rp_f1_confidence(row) -> float:
+    """0-1 confidence in rp_f1, from IP volume. NEW (retrain IP-collapse fix)."""
+    _, conf = _pitcher_rate_wins(row, 'RP')
+    return conf
+
+
+def pitcher_f1_confidence(row) -> float:
+    """Route to the right confidence fn by role — same routing as pitcher_f1."""
+    pos = str(row.get('POS', ''))
+    gs  = _s(row.get('PIT_GS', 0))
+    g   = _s(row.get('PIT_G',  0))
+    if pos == 'SP' or gs > 25:
+        return sp_f1_confidence(row)
+    elif pos in ('RP', 'CL') or (g > 50 and gs < 5):
+        return rp_f1_confidence(row)
+    return sp_f1_confidence(row)
+
+
+def sp_fip_minus(row) -> float:
+    """
+    Individual-acquisition companion metric (Open Items #5): raw FIP-,
+    DISPLAY ONLY, not a second WAR estimate. ERA+ (sp_f1's target) contains
+    the pitcher's current defense's contribution — right for in-house team-
+    construction value, where those wins are real. FIP- strips defense out —
+    right for judging an arm you're about to acquire, who won't bring his
+    current defense with him. No team-wins-per-SD coefficient for FIP- alone
+    is locked (the +5.21/-0.50 head-to-head in Open Items #5 is a PARTIAL
+    coefficient measured with ERA+ in the same model, not a standalone
+    conversion) — so this returns the raw stat for side-by-side display and
+    a luck flag, not a fabricated second WAR number.
+    """
+    return _s(row.get('PIT_FIP_MINUS', row.get('FIP-', 100)))
+
+
+def era_fip_luck_flag(row) -> str:
+    """
+    ERA+ vs FIP- divergence flag (Open Items #5 — carry both, use each for
+    its own question). Large ERA+ > FIP- gap = outperforming his periphs
+    (likely defense/sequencing-aided — caution buying at the ERA+ price).
+    Large FIP- < ERA+ gap in the other direction = unlucky (buy-low read).
+    Threshold is a display convenience (10 pts), not a fitted coefficient.
+    """
+    era_plus = _s(row.get('ERA+', 100))
+    fip_minus = sp_fip_minus(row)
+    # ERA+ higher-is-better; FIP- lower-is-better — convert FIP- to the same
+    # direction (FIP+ analog) before comparing.
+    fip_plus_equiv = 200 - fip_minus
+    gap = era_plus - fip_plus_equiv
+    if gap >= 10:
+        return 'OUTPERFORMING_PERIPHS'   # ERA+ flattered vs FIP- — caution
+    if gap <= -10:
+        return 'UNLUCKY'                 # FIP- better than ERA+ — buy-low read
+    return ''
 
 
 def pitcher_f1(row) -> float:
