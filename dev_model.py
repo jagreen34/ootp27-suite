@@ -21,7 +21,7 @@ from dev_constants import (
     WORK_ETHIC_MULT, APPLY_WORK_ETHIC, REGISTRY_VERSION,
     RP_STUFF_DEFLATOR, ROLE_POSITIONS, ROLE_INNINGS, APPLY_ROLE_VOLUME,
     POSITION_FALLBACK, MIN_REAL_PITCHES, MIRAGE_PENALTY,
-    EROSION_PENALTY_GRADES,
+    EROSION_PENALTY_GRADES, TOOL_POSITION_GATES,
 )
 
 # Column aliases: the exports don't agree on names.
@@ -274,6 +274,44 @@ def effective_position(row):
     fb = POSITION_FALLBACK.get(listed, listed)
     return fb, True, (f"CANNOT HOLD {listed} ({col} {int(v)} < {floor}, gloves are "
                       f"FIXED) -- re-barred at {fb}")
+
+
+def playable_positions(row):
+    """
+    Positions his TOOLS allow, not the ones he has experience at.
+    Eligibility in OOTP is experience; the tools are the real gate.
+    """
+    out = []
+    for pos, spec in TOOL_POSITION_GATES.items():
+        if spec is None:
+            out.append(pos)
+            continue
+        col, floor = spec
+        v = pd.to_numeric(row.get(col), errors="coerce")
+        if not pd.isna(v) and v >= floor:
+            out.append(pos)
+    return out
+
+
+def listed_positions(row):
+    """Every position on the POS string, e.g. 'SS/3b' -> ['SS','3B']."""
+    return [p.strip().upper() for p in str(row.get("POS", "")).split("/")
+            if p.strip()]
+
+
+def park_delta(proj):
+    """
+    Score under the park overlay minus the neutral score. POSITIVE = the park
+    helps him. ⚠ The multiplier is DERIVED, not fitted -- see dev_constants.
+    """
+    neutral = adj = 0.0
+    for tool, w in BATTER_WEIGHTS.items():
+        v = proj.get(tool)
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            continue
+        neutral += w * v
+        adj += w * PARK_OVERLAY.get(tool, 1.0) * v
+    return round(adj - neutral, 1)
 
 
 def arsenal_ok(row):

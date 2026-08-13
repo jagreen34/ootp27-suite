@@ -121,8 +121,29 @@ DEFENSIVE_FLOORS = {
 # 1.000), so BATTER_WEIGHTS are park-blind. This overlay is a judgement
 # adjustment, NOT a measured coefficient. Off by default.
 # --------------------------------------------------------------------------
-PARK_OVERLAY = {"POW": 1.15, "GAP": 0.90}
-APPLY_PARK_OVERLAY = False
+# ⚠ DERIVED, NOT FITTED. The multiverse the weights came from is park-NEUTRAL
+# (every PF column is exactly 1.000), so no park coefficient can be fit on it.
+# Reasoning: HR x1.30 at home, ~0 away -> ~15% over a full season. 2B x0.95 /
+# 3B x0.90 average ~0.93, halved -> ~0.96. Park factors are SYMMETRIC (they
+# boost the opponent too), so this is an EDGE multiplier, not a production one.
+# Replace with a fitted value once AC historical team-seasons are in hand --
+# ~30 seasons x 28 teams with real park variation would measure it properly.
+PARK_OVERLAY = {"POW": 1.15, "GAP": 0.96}
+APPLY_PARK_OVERLAY = False        # ParkD is shown as its own column instead
+
+# Anyone with this arm can stand at third; first base has no real tool gate.
+# Position ELIGIBILITY in OOTP is experience, not ability -- the tools are the
+# real gate (a clone went 0->55 at 1B in one period).
+TOOL_POSITION_GATES = {
+    "1B": None,
+    "3B": ("IF ARM", 55),
+    "2B": ("IF RNG", 50),
+    "SS": ("IF RNG", 60),
+    "LF": ("OF RNG", 45),
+    "RF": ("OF RNG", 50),
+    "CF": ("OF RNG", 60),
+    "C":  ("C ABI", 55),
+}
 
 # A52 -- work ethic: small real accelerant (~15% top-to-bottom, r=+0.072).
 # Low WE does NOT gate development (~87% of top band). Tiebreaker, not a cut.
