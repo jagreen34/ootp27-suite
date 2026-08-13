@@ -61,6 +61,7 @@ from dev_model import (
     project_pitcher, score_pitcher, flag_pitcher, real_pitches,
     positional_bars, budget, is_batter, is_pitcher,
     effective_position, role_of, arsenal_ok,
+    playable_positions, listed_positions, park_delta,
 )
 
 POSITIONS = ["C", "1B", "2B", "3B", "SS", "LF", "CF", "RF"]
@@ -139,6 +140,15 @@ with st.expander("Positional bars from this population"):
 
 
 # ── batters ───────────────────────────────────────────────────────────────────
+def org_of(r):
+    """Team/org label. Exports disagree on the column name; try each."""
+    for c in ("ORG", "TM", "Team", "Org", "Organization"):
+        v = r.get(c)
+        if v is not None and str(v) not in ("nan", "-", ""):
+            return str(v)
+    return ""
+
+
 def _raw_batter_proj(r):
     if show_projected:
         return project_batter(r)
@@ -186,13 +196,15 @@ def build_batters(df, all_pool, pos_pools):
         bar = bars.get(p0)
         pool = pos_pools.get(p0)
         rows.append({
-            "Name": r.get("Name"), "POS": r.get("POS"),
+            "Name": r.get("Name"), "Org": org_of(r), "POS": r.get("POS"),
             "Plays": p0 + ("*" if moved else ""),
             "Age": pd.to_numeric(r.get("Age"), errors="coerce"),
             "Score": sc,
             "Pct@POS": pct(pool, sc) if pool is not None else np.nan,
             "PctAll": pct(all_pool, sc),
             "vsBar": round(sc - bar) if bar else np.nan,
+            "ParkD": park_delta(proj),
+            "CanPlay": "/".join(playable_positions(r)),
             "Budget": budget(pd.to_numeric(r.get("Age"), errors="coerce")),
             "POW": proj.get("POW"), "EYE": proj.get("EYE"),
             "HT": proj.get("BABIP"), "GAP": proj.get("GAP"), "AVK": proj.get("AVK"),
@@ -214,7 +226,7 @@ def build_pitchers(df):
         sc = score_pitcher(proj, r)
         n, _ = real_pitches(r)
         rows.append({
-            "Name": r.get("Name"), "POS": r.get("POS"),
+            "Name": r.get("Name"), "Org": org_of(r), "POS": r.get("POS"),
             "Role": role_of(r),
             "Age": pd.to_numeric(r.get("Age"), errors="coerce"),
             "Score": sc, "STU": proj.get("STU"), "MOV": proj.get("MOV"),
@@ -267,23 +279,49 @@ f1, f2, f3 = st.columns(3)
 max_age = int(d["Age"].max()) if d["Age"].notna().any() else 45
 age_cap = f1.slider("Max age", 17, max_age, max_age)
 top_n = f2.slider("Show top", 5, min(200, len(d)), min(30, len(d)))
-pos_filter = f3.multiselect("Positions", sorted(
-    d["POS"].astype(str).str.split("/").str[0].str.upper().unique()))
+all_pos = sorted({p for v in d["POS"].astype(str) for p in v.upper().split("/") if p.strip()})
+pos_filter = f3.multiselect("Positions", all_pos)
+match_tools = st.checkbox(
+    "Position filter includes anyone whose TOOLS allow it",
+    value=False,
+    help="Eligibility in OOTP is experience, not ability — the tools are the "
+         "real gate. On: a 2B with IF ARM 55+ shows under 3B even if he's "
+         "never played there.")
+orgs = sorted(o for o in d.get("Org", pd.Series(dtype=str)).unique() if str(o).strip())
+org_filter = st.multiselect("Teams", orgs) if orgs else []
 
 v = d[d["Age"] <= age_cap] if d["Age"].notna().any() else d
 if pos_filter:
-    v = v[v["POS"].astype(str).str.split("/").str[0].str.upper().isin(pos_filter)]
+    want = set(pos_filter)
+    def _hit(row):
+        listed = {p.strip().upper() for p in str(row["POS"]).split("/") if p.strip()}
+        if listed & want:
+            return True
+        if match_tools and row.get("CanPlay"):
+            return bool({p for p in str(row["CanPlay"]).split("/")} & want)
+        return False
+    v = v[v.apply(_hit, axis=1)]
+if org_filter:
+    v = v[v["Org"].isin(org_filter)]
 v = v.head(top_n)
 
-cols = (["Name", "POS", "Plays", "Age", "Score", "Pct@POS", "PctAll", "vsBar",
-         "Budget", "POW", "EYE", "HT", "GAP", "AVK"]
+cols = (["Name", "Org", "POS", "Plays", "CanPlay", "Age", "Score", "Pct@POS",
+         "PctAll", "vsBar", "ParkD", "Budget", "POW", "EYE", "HT", "GAP", "AVK"]
         if mode == "Batters" else
-        ["Name", "POS", "Role", "Age", "Score", "PctAll", "STU", "MOV", "CON",
-         "RealPitches"])
+        ["Name", "Org", "POS", "Role", "Age", "Score", "PctAll", "STU", "MOV",
+         "CON", "RealPitches"])
+# drop the Org column entirely when the file has no team info (draft pools)
+if "Org" in d.columns and not d["Org"].astype(str).str.strip().any():
+    cols = [c for c in cols if c != "Org"]
 st.dataframe(v[[c for c in cols if c in v.columns]],
              hide_index=True, use_container_width=True)
 if mode == "Batters":
-    st.caption("**Plays** = the position he can actually hold; `*` means he "
+    st.caption("**ParkD** = score under the Quakers park overlay minus neutral "
+               "(positive = the park helps him). ⚠ The multiplier is DERIVED "
+               "(HR ×1.30 at home ≈ +15% over a season), **not fitted** — the "
+               "multiverse the weights came from is park-neutral. "
+               "**CanPlay** = positions his TOOLS allow, not his experience. "
+               "**Plays** = the position he can actually hold; `*` means he "
                "misses the defensive floor at his listed position and has been "
                "re-barred at the fallback. Gloves are FIXED [A50].")
 else:
