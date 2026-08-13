@@ -14,11 +14,14 @@ import pandas as pd
 from dev_constants import (
     DISPLAY_TO_INTERNAL_MID, INTERNAL_LOWER_BOUNDS,
     BATTER_AGE_BUDGET, PITCHER_AGE_BUDGET,
-    BATTER_WEIGHTS, PITCHER_WEIGHTS_ACTIVE, PITCHER_DEVELOPING_TOOLS,
+    BATTER_WEIGHTS, PITCHER_WEIGHTS, PITCHER_DEVELOPING_TOOLS,
     COMMAND_GATE, COMMAND_GATE_SAFE, PITCH_FLOOR, PITCH_FLOOR_CHANGEUP,
     PITCH_COLUMNS, PITCH_EROSION, DEFENSIVE_FLOORS,
     PARK_OVERLAY, APPLY_PARK_OVERLAY,
     WORK_ETHIC_MULT, APPLY_WORK_ETHIC, REGISTRY_VERSION,
+    RP_STUFF_DEFLATOR, ROLE_POSITIONS, ROLE_INNINGS, APPLY_ROLE_VOLUME,
+    POSITION_FALLBACK, MIN_REAL_PITCHES, MIRAGE_PENALTY,
+    EROSION_PENALTY_GRADES,
 )
 
 # Column aliases: the exports don't agree on names.
@@ -32,8 +35,32 @@ BAT_TOOLS = {
 PIT_TOOLS = {
     "MOV": ("MOV", "MOV P"),
     "CON": ("CON_1", "CON P_1"),
-    "STU": ("STU", "STU P"),   # read/displayed only -- NOT scored (see score_pitcher)
+    "STU": ("STU", "STU P"),
 }
+
+
+
+# ---------------------------------------------------------------- channel split
+PITCHER_POS = {"SP", "RP", "CL", "P", "SP/RP", "RP/SP"}
+
+
+def is_pitcher(row):
+    """
+    Channel split keyed on POS (SP/RP/CL), which every export carries.
+    RL is used only as a fallback -- some exports (draft pools) omit it
+    entirely, and defaulting on a missing column silently returned zero rows.
+    """
+    pos = str(row.get("POS", "")).upper().split("/")[0].strip()
+    if pos in PITCHER_POS:
+        return True
+    if pos:                      # a real fielding position -> batter
+        return False
+    rl = row.get("RL")
+    return rl is not None and str(rl) != "-"
+
+
+def is_batter(row):
+    return not is_pitcher(row)
 
 
 # ---------------------------------------------------------------- conversions
@@ -140,7 +167,13 @@ def decompose(proj):
 
 
 # ------------------------------------------------------------------ pitchers
-def project_pitcher(row):
+def project_pitcher(row, apply_gate=True):
+    """
+    MOV/CON take the age budget; pitch grades barely develop [A48] so STU is
+    read, never projected. If he is below the command gate his out-pitch
+    ERODES rather than holds [A54] -- that is a development claim, so it is
+    applied here (projection) and not to the current-state score.
+    """
     age = pd.to_numeric(row.get("Age"), errors="coerce")
     out = {}
     for tool, (cc, pc) in PIT_TOOLS.items():
@@ -151,26 +184,39 @@ def project_pitcher(row):
             out[tool] = proj
         else:
             out[tool] = cur      # STU is DERIVED -- read only, never project
+    if apply_gate and below_command_gate(row):
+        op, og = out_pitch(row)
+        if op and PITCH_EROSION.get(op) in ("erodes", "mild"):
+            stu = out.get("STU")
+            if stu is not None and not pd.isna(stu):
+                out["STU"] = max(20, stu - 5 * EROSION_PENALTY_GRADES)
+                out["_eroded"] = op
     return out
 
 
-def score_pitcher(proj):
+def score_pitcher(proj, row=None):
     """
-    RESOLVED 2026-08-13 (Open Items #28): scores MOV/CON only
-    (PITCHER_WEIGHTS_ACTIVE), matching the acquisitions.py sp_f1/rp_f1 fix.
-    STU stays in project_pitcher()'s output for display (dev_board.py's
-    report() still shows the STU column) but is NOT scored -- A27 excludes
-    it as a derived roll-up, and A48/A32/A34 confirm it's engine-derived
-    from velocity + pitch grades + arsenal depth, not an independent
-    primitive; scoring it alongside MOV/CON risked double-counting the same
-    arsenal signal. See dev_constants.py's PITCHER_WEIGHTS_ACTIVE comment.
+    Role-adjusted. Two gates act on the SCORE because both are current-state
+    facts, not projections:
+      - RP/CL Stuff is deflated (registry: SP->RP conversion inflates ~+5)
+      - a mirage arsenal (<2 pitches clearing the A41 floor) is penalised,
+        because the derived Stuff rests on grades that will not play
     """
     s = 0.0
-    for tool, w in PITCHER_WEIGHTS_ACTIVE.items():
+    role = role_of(row) if row is not None else None
+    for tool, w in PITCHER_WEIGHTS.items():
         v = proj.get(tool)
         if v is None or (isinstance(v, float) and np.isnan(v)):
             continue
+        if tool == "STU" and role in ("RP", "CL"):
+            v = max(0.0, v - RP_STUFF_DEFLATOR)
         s += w * v
+    if row is not None:
+        ok, _, _ = arsenal_ok(row)
+        if not ok:
+            s *= MIRAGE_PENALTY
+        if APPLY_ROLE_VOLUME and role:
+            s *= ROLE_INNINGS.get(role, 200) / 200.0
     return round(s, 1)
 
 
@@ -202,6 +248,45 @@ def out_pitch(row):
     return best, grade
 
 
+
+# ------------------------------------------------------------------- GATES
+def role_of(row):
+    """SP / RP / CL from POS."""
+    pos = str(row.get("POS", "")).upper().split("/")[0].strip()
+    return ROLE_POSITIONS.get(pos)
+
+
+def effective_position(row):
+    """
+    The position he can ACTUALLY hold. Gloves are fixed [A50], so a floor
+    miss is permanent -- re-bar him at the fallback instead of flattering
+    him against a bar he cannot clear.
+    Returns (position, was_reassigned, reason_or_None).
+    """
+    listed = str(row.get("POS", "")).upper().split("/")[0].strip()
+    spec = DEFENSIVE_FLOORS.get(listed)
+    if not spec:
+        return listed, False, None
+    col, floor = spec
+    v = pd.to_numeric(row.get(col), errors="coerce")
+    if pd.isna(v) or v >= floor:
+        return listed, False, None
+    fb = POSITION_FALLBACK.get(listed, listed)
+    return fb, True, (f"CANNOT HOLD {listed} ({col} {int(v)} < {floor}, gloves are "
+                      f"FIXED) -- re-barred at {fb}")
+
+
+def arsenal_ok(row):
+    """A41: does he have a usable arsenal, or is his Stuff built on mirages?"""
+    n, names = real_pitches(row)
+    return n >= MIN_REAL_PITCHES, n, names
+
+
+def below_command_gate(row):
+    con = pd.to_numeric(row.get("CON_1"), errors="coerce")
+    return (not pd.isna(con)) and con < COMMAND_GATE
+
+
 # --------------------------------------------------------------------- flags
 def positional_floor_flag(row, pos):
     spec = DEFENSIVE_FLOORS.get(str(pos).upper().split("/")[0])
@@ -219,9 +304,9 @@ def positional_floor_flag(row, pos):
 def flag_batter(row, proj, score, bar, pct):
     f = []
     age = pd.to_numeric(row.get("Age"), errors="coerce")
-    ff = positional_floor_flag(row, row.get("POS"))
-    if ff:
-        f.append(ff)
+    _, moved, why = effective_position(row)
+    if moved:
+        f.append(why)
     ut = proj.get("_unreachable_tools") or []
     if ut:
         f.append(f"UNREACHABLE potential in {', '.join(ut)} "
@@ -278,7 +363,7 @@ def flag_pitcher(row, proj):
 # ------------------------------------------------------------ positional bars
 def positional_bars(league_df):
     """League mean score by position, computed on the SAME weights."""
-    b = league_df[league_df["RL"] == "-"].copy()
+    b = league_df[league_df.apply(is_batter, axis=1)].copy()
     if "ORG" in b.columns:
         b = b[b["ORG"].astype(str) != "-"]
     rows = []

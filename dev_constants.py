@@ -69,24 +69,9 @@ BATTER_WEIGHTS = {
     "AVK":   1.4,   # near-inert; weakest team separator on the board
 }
 
-# A48/A53 team-wins weights -- pitcher tools, AS ORIGINALLY HANDED OFF. Kept
-# for provenance; NOT what the F1 chain scores (see PITCHER_WEIGHTS_ACTIVE).
+# A48/A53 team-wins weights -- pitcher tools. STU is DERIVED (engine-computed
+# from the arsenal): read it, never project or inject it.
 PITCHER_WEIGHTS = {"STU": 1.7, "MOV": 1.6, "CON": 1.3}
-
-# RESOLVED (Jeff, 2026-08-13): PITCHER_WEIGHTS' STU term conflicted with two
-# locked findings and is DROPPED from the active F1 chain.
-#   (1) A27 (locked current-value pitcher screen) builds its ordering as
-#       MOV -> CON -> arsenal(best-two) -> STM and explicitly excludes STU
-#       as a derived roll-up, not a primary input.
-#   (2) A48/A32/A34: STU is ENGINE-DERIVED from velocity + pitch grades +
-#       arsenal depth -- it is not an independent primitive. Scoring it
-#       alongside MOV/CON (which correlate with arsenal quality themselves)
-#       risks double-counting the same underlying arsenal signal twice.
-# PITCHER_WEIGHTS above is kept as the historical record of what the retrain
-# handoff specified; PITCHER_WEIGHTS_ACTIVE is what acquisitions.py actually
-# scores. If a future thread wants an arsenal-quality term back in (A27's
-# "best-two"), it belongs here as its own tagged weight, not as STU.
-PITCHER_WEIGHTS_ACTIVE = {"MOV": 1.6, "CON": 1.3}
 
 # Only MOV and CON take the age budget. Pitch grades barely develop (A48).
 PITCHER_DEVELOPING_TOOLS = ("MOV", "CON")
@@ -149,84 +134,38 @@ APPLY_WORK_ETHIC = False   # off by default; effect is inside the noise
 # A projection is the CENTRE of a wide distribution, never a forecast.
 BIMODAL_WARNING = True
 
-# ============================================================================
-# VALUE-MODEL RETRAIN (Open Items #4/#5, VALUE_MODEL_RETRAIN_HANDOFF.md)
-# Replaces off_f1/sp_f1/rp_f1's stale WAR-fit coefficients with a routed
-# wRC+ / ERA+ / ZR chain. NO NEW REGRESSION -- BATTER_WEIGHTS/PITCHER_WEIGHTS
-# above are already locked (A44/A53 wRC+ weights; A48/A53 team-wins weights).
-# This section supplies the RECOMBINATION constants: how a weighted rating
-# score becomes a metric-point delta, and how that delta becomes WAR.
-# ============================================================================
 
-# Team-wins-per-SD -- LOCKED, team_seasons_all.csv, 4,200 team-seasons,
-# joint standardized model R^2=0.754. Offense and run-prevention are within
-# 3% of each other; carry both ERA+ (team construction) and FIP- (individual
-# acquisition -- an arm won't bring his old defense with him).
-WINS_PER_SD = {"wRC+": 5.84, "ERA+": 5.69, "ZR": 0.76}
+# --------------------------------------------------------------------------
+# ROLE ADJUSTMENTS (pitchers)
+# Registry: SP->RP role conversion inflates Stuff ~+5 display (~38 internal).
+# A reliever's STU 60 is NOT the same object as a starter's STU 60. Comparing
+# them raw overrates every reliever on the board.
+# --------------------------------------------------------------------------
+RP_STUFF_DEFLATOR = 5.0          # subtract from RP/CL Stuff to compare vs SP
+ROLE_POSITIONS = {"SP": "SP", "RP": "RP", "CL": "CL", "P": "SP"}
 
-# Team-level SD of each target metric -- team_seasons_all.csv, n=4,200.
-TEAM_SD = {"wRC+": 8.60, "ERA+": 9.96, "ZR": 31.22}
+# ASSUMED, not fitted -- role-typical innings for a volume weight. Off by
+# default; enabling bakes an assumption into the score (methodology rule 9).
+ROLE_INNINGS = {"SP": 200, "RP": 70, "CL": 70}
+APPLY_ROLE_VOLUME = False
 
-# League-average team PA / IP -- team_seasons_all.csv, n=4,200. The volume
-# denominator: an individual's rate stat becomes a team-wins contribution
-# scaled by his share of a team's plate appearances / innings.
-TEAM_PA = 6259
-TEAM_IP = 1459
-
-# AC-NATIVE league-mean ratings -- player_search export, ORG != '-' (rostered
-# players only), n=620 batters / 512 pitchers.
-# SNAPSHOT DATE: 2026-08-13. FROZEN -- not auto-refreshed. The AC's rating
-# distribution moves slowly within a season, so this is fine through the
-# current season; it goes stale across offseasons as the player pool turns
-# over (draft classes in, retirements/cuts out). Re-derive from a current
-# player_search export at the start of each new season -- there is no
-# refresh mechanism yet; recompute manually and update this date.
-# Deliberately NOT the K-T multiverse mean: K-T is park-neutral by
-# construction (Handoff Sec 9); this is the real AC pool, with the Quakers'
-# and every other park's own factors already inside the wRC+/ERA+ outcomes
-# the weights were fit against.
-BATTER_LEAGUE_MEANS = {
-    "POW": 37.46, "EYE": 44.82, "BABIP": 45.77, "GAP": 42.83, "AVK": 48.13,
+# --------------------------------------------------------------------------
+# FALLBACK POSITIONS -- where a player goes when he misses a defensive floor.
+# Gloves are FIXED [A50], so a floor miss is permanent, not a projection risk.
+# The tool re-bars him at the fallback rather than flattering him at a
+# position he cannot hold.
+# --------------------------------------------------------------------------
+POSITION_FALLBACK = {
+    "SS": "3B", "CF": "LF", "C": "1B", "2B": "1B",
+    "3B": "1B", "LF": "1B", "RF": "1B",
 }
-PITCHER_LEAGUE_MEANS = {"STU": 45.41, "MOV": 48.67, "CON": 40.98}   # STU kept for reference; unused by the active chain
 
-# WARNING -- UNIT ASSUMPTION, NOT independently verified. BATTER_WEIGHTS'
-# unit ("wRC+ points per 10 rating points") is documented at A44/A53.
-# PITCHER_WEIGHTS_ACTIVE is documented only as "team-wins weights" (A48/A53)
-# -- no per-rating-point unit is stated anywhere in the Log/Spec. Treated
-# here as "ERA+ points per 10 rating points" BY ANALOGY to the batter
-# convention, not by citation. If pitcher F1 output looks off-scale against
-# known AC WAR totals, check this assumption first.
-#
-# RESOLVED 2026-08-13: the A27-vs-STU tension (see PITCHER_WEIGHTS_ACTIVE
-# above) is fixed -- STU dropped, MOV/CON only, consistent with A27's
-# ordering and A48/A32/A34's derived-STU finding.
-PITCHER_WEIGHT_UNIT_ASSUMED = True
+# A41 -- an arm with fewer than this many pitches clearing the crossover floor
+# has an arsenal that does not exist in usable form. His derived Stuff is
+# built on grades that will not play.
+MIN_REAL_PITCHES = 2
+MIRAGE_PENALTY = 0.65            # score multiplier when the arsenal is a mirage
 
-# Replacement-level offset, full-season-volume, wins below a league-AVERAGE
-# player at that role. WARNING -- ASSUMED, NOT AC-DERIVED. Standard
-# sabermetric convention (SP ~2 WAR/200 IP, RP ~1 WAR/60 IP below average
-# defines replacement). Kept flagged per methodology rule 9 (Log, v15.39):
-# "Never let an unmeasured constant carry a conclusion... if a finding flips
-# under a plausible alternative value of an assumed parameter, fit it or
-# report the sensitivity." LOW IMPACT, not urgent to fit: this offset is a
-# flat additive shift per role, so it does not reorder any pitcher against
-# another at the same role -- it only affects absolute WAR level, not rank.
-# The suite's OLD sp_war_estimate() anchors a different number (bare-minimum
-# arsenal = 1.58 WAR, A14/A15) but that was calibrated against the retired
-# WAR-fit GB model at implicit full-season volume and is NOT directly
-# portable into this chain -- noted, not merged.
-# Batters need no separate constant: POS_ADJ_CONSTANTS (A26, UNCHANGED,
-# "reconstructs absolute WAR") already supplies the average-to-replacement
-# positional shift and stays wired in unchanged via pos_adj().
-REPLACEMENT_OFFSET_WINS = {"SP": 2.0, "RP": 1.0}
-REPLACEMENT_VOLUME = {"SP": 200.0, "RP": 60.0}   # IP the offset is defined over
-
-# Volume needed for FULL confidence in the rate estimate (display threshold,
-# not a hard cutoff -- the number is always real, never suppressed). Below
-# this, F1 should be shown alongside its confidence, not trusted at face
-# value. This is the fix for the F1 IP-collapse (Open Items #4): at low IP
-# the estimate now shrinks toward a real, bounded number instead of reading
-# -2 to -5, and confidence tells the caller how much to trust it.
-FULL_CONFIDENCE_PA = 300
-FULL_CONFIDENCE_IP = 80
+# A54 -- below the command gate a breaker/cutter erodes 6-13 internal pts/yr.
+# Applied to the PROJECTION only (a development claim, not a current fact).
+EROSION_PENALTY_GRADES = 1       # display grades docked from the out-pitch
