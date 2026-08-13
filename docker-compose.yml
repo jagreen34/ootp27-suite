@@ -9,6 +9,19 @@ services:
     restart: unless-stopped
     environment:
       - OOTP_DATA_DIR=/app/data
+      - APP_PASSWORD=Brycrt123!1
+
+  ootp-rank:
+    build:
+      context: .
+      dockerfile: rank/Dockerfile
+    container_name: ootp-rank
+    ports:
+      - "8503:8501"
+    restart: unless-stopped
+    environment:
+      - APP_PASSWORD=Brycrt123!1
+
 volumes:
   ootp27_data:
     driver: local
