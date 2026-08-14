@@ -67,11 +67,34 @@ PITCHER_AGE_BUDGET = {
 # Read off the editor's Resulting Stats panel -- the engine's own expected line,
 # no fit, no error term. Units: RUNS per DISPLAY GRADE, 600-PA season.
 # Four of five tools are LINEAR in display grade. POWER is not -- see POWER_CURVE.
+# ══════════════════════════════════════════════════════════════════════════
+# ⚠⚠ TWO WEIGHT SETS, TWO DIFFERENT UNITS. DO NOT MIX THEM.
+# `acquisitions.py` divides by 10 and centres on BATTER_LEAGUE_MEANS, so it
+# needs the A44/A53 wRC+ convention. `dev_model.py` scores in runs above a
+# display-25 baseline. Feeding one into the other is a ~6x scale error --
+# and it nearly shipped silently (only a missing 'POW' key raised a
+# KeyError instead).
+# ══════════════════════════════════════════════════════════════════════════
+
+# UNIT: wRC+ POINTS PER 10 RATING POINTS  [A44/A53]. Used by acquisitions.py.
+# ⚠ SUPERSEDED BY A57 but retained because the deployed F1/F2 chain is built
+# on this unit. A57 found TWO RANK ERRORS here -- Eye > BABIP is BACKWARDS,
+# and Avoid K's is ~2.8x too low (buried below Gap when it is really ~2.5x Gap
+# and ties Eye). **The retrain thread must port acquisitions.py to the
+# engine-exact set below; until then the suite runs on known-wrong ordering.**
 BATTER_WEIGHTS = {
+    "POW": 6.8, "EYE": 4.9, "BABIP": 3.2, "GAP": 1.6, "AVK": 1.4,
+}
+
+# UNIT: RUNS PER DISPLAY GRADE, 600-PA season  [A57, ENGINE-EXACT].
+# Read off the editor's Resulting Stats panel -- the engine's own expected
+# line. No fit, no error term. POWER is NOT here: it is the only genuine
+# engine nonlinearity and lives in POWER_CURVE.
+BATTER_RUNS_PER_GRADE = {
     "BABIP": 0.520,
     "EYE":   0.453,
-    "AVK":   0.416,   # was 1.4 relative -- the flat fit could not see this channel
-    "GAP":   0.166,   # never adds a hit; only upgrades 1B -> 2B (worth .30 runs)
+    "AVK":   0.416,   # the flat regression could not see this channel
+    "GAP":   0.166,   # never adds a hit; only upgrades 1B -> 2B (~.30 runs)
 }
 
 # POWER is the ONLY genuine engine nonlinearity [A57a] -- convex through display
