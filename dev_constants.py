@@ -390,3 +390,32 @@ RUNS_PER_ERROR = 0.5
 # one to play 3B/RF/C), not a value term once you are there.**
 ARM_RUNS_PER_5 = {"CF": 0.31, "LF": 0.20, "RF": 0.09,
                   "C": 0.0, "SS": 0.0, "3B": 0.0, "2B": 0.0}
+
+
+# ==========================================================================
+# ARSENAL DEPTH  [A59 -- K-T parquet, n=19,542 qualified starter-seasons]
+# ==========================================================================
+# Depth is an INDEPENDENT value term, not a proxy for ratings: controlling for
+# STU/MOV/CON it is worth +0.89 ERA+ per additional real pitch (vs MOV at
+# +1.09 per RATING point). Innings rise too: 191 IP at 2 pitches -> 209 at 5.
+ARSENAL_DEPTH_ERAPLUS_PER_PITCH = 0.89
+
+# ERA+ by real-pitch count for qualified starters. Peaks at 5; the dip at 6 is
+# small-n (387) and may be "nothing is elite."
+ARSENAL_DEPTH_ERAPLUS = {2: 99.8, 3: 104.7, 4: 107.9, 5: 109.3, 6: 105.7}
+
+# ⚠ THE 3-PITCH SCREEN IS AGE-RELATIVE, NOT ABSOLUTE. Mean real pitches by
+# age: 17:1.05 · 18:1.57 · 19:1.87 · 21:2.33 · 24:2.79 · 28:3.02. Applying a
+# flat 3+ bar to teenagers compares them to 28-year-olds.
+# Within a pitcher, count grows only +0.095/season and 89% show NO change --
+# the cross-sectional rise is SURVIVORSHIP. Only 16% of sub-3 arms at 18-19
+# reach 3+ by 23-25. **What you draft is substantially what you get** [A48].
+MEAN_REAL_PITCHES_BY_AGE = {
+    17: 1.05, 18: 1.57, 19: 1.87, 20: 2.04, 21: 2.33, 22: 2.61,
+    23: 2.69, 24: 2.79, 25: 2.92, 26: 2.95, 27: 2.99, 28: 3.02,
+}
+# For a starter you intend to KEEP: 3+ is a real bar and 5 is the sweet spot.
+# Two pitches is a RELIEVER -- league-average as a starter (ERA+ 99.8, 2.42
+# WAR), and only 5.7% of qualified starter-seasons carry fewer than 3.
+STARTER_ARSENAL_TARGET = 3
+STARTER_ARSENAL_OPTIMAL = 5
