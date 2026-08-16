@@ -1,3 +1,42 @@
+"""
+dev_model.py -- projection + valuation engine.
+
+Pipeline:
+  display rating --(midpoints)--> internal --(+ age budget)--> projected
+  internal --(lower bounds)--> projected display --(cap at potential)--> final
+  final ratings --(tool weights)--> score --(minus positional bar)--> value
+
+Every constant lives in dev_constants.py. Nothing is hard-coded here.
+"""
+import numpy as np
+import pandas as pd
+
+from dev_constants import (
+    DISPLAY_TO_INTERNAL_MID, INTERNAL_LOWER_BOUNDS,
+    BATTER_AGE_BUDGET, PITCHER_AGE_BUDGET,
+    BATTER_RUNS_PER_GRADE as BATTER_WEIGHTS, PITCHER_WEIGHTS, PITCHER_DEVELOPING_TOOLS,
+    COMMAND_GATE, COMMAND_GATE_SAFE, PITCH_FLOOR, PITCH_FLOOR_CHANGEUP,
+    PITCH_COLUMNS, PITCH_EROSION, DEFENSIVE_FLOORS,
+    PARK_OVERLAY, APPLY_PARK_OVERLAY,
+    WORK_ETHIC_MULT, APPLY_WORK_ETHIC, REGISTRY_VERSION,
+    RP_STUFF_DEFLATOR, ROLE_POSITIONS, ROLE_INNINGS, APPLY_ROLE_VOLUME,
+    POSITION_FALLBACK, MIN_REAL_PITCHES, MIRAGE_PENALTY,
+    EROSION_PENALTY_GRADES, TOOL_POSITION_GATES,
+    DEFENSIVE_SECONDARY, STARTER_FLOORS, POWER_CURVE,
+    # ── v15.45: A58 defensive value. Every one of these already existed in
+    # dev_constants.py; NOTHING imported them, so the rank page scored batters
+    # with zero defensive value at all.
+    RANGE_RUNS_PER_5, TDP_DP_PER_POINT, ERROR_ERRORS_PER_5, ARM_RUNS_PER_5,
+    RUNS_PER_DP, RUNS_PER_ERROR, DEF_BASELINE_GRADE, APPLY_DEF_RUNS,
+    DEF_RANGE_COL, DEF_ERROR_COL, DEF_ARM_COL,
+    # ── v15.45: A59 arsenal depth -- likewise defined and unused.
+    ARSENAL_DEPTH_RATING_EQUIV, APPLY_ARSENAL_DEPTH,
+    MEAN_REAL_PITCHES_BY_AGE, APPLY_AGE_RELATIVE_ARSENAL, ARSENAL_AGE_TOLERANCE,
+    STARTER_ARSENAL_TARGET, STARTER_ARSENAL_OPTIMAL,
+    APPLY_COMMAND_GATE, COMMAND_GATE_CARD, COMMAND_GATE_INTERNAL,
+)
+
+
 def playable_positions(row):
     """
     Positions his TOOLS allow, not the ones he has experience at.
@@ -39,34 +78,6 @@ def park_delta(proj):
     neutral += pr
     adj += pr * PARK_OVERLAY.get("POW", 1.0)
     return round(adj - neutral, 1)
-
-
-"""
-dev_model.py -- projection + valuation engine.
-
-Pipeline:
-  display rating --(midpoints)--> internal --(+ age budget)--> projected
-  internal --(lower bounds)--> projected display --(cap at potential)--> final
-  final ratings --(tool weights)--> score --(minus positional bar)--> value
-
-Every constant lives in dev_constants.py. Nothing is hard-coded here.
-"""
-import numpy as np
-import pandas as pd
-
-from dev_constants import (
-    DISPLAY_TO_INTERNAL_MID, INTERNAL_LOWER_BOUNDS,
-    BATTER_AGE_BUDGET, PITCHER_AGE_BUDGET,
-    BATTER_RUNS_PER_GRADE as BATTER_WEIGHTS, PITCHER_WEIGHTS, PITCHER_DEVELOPING_TOOLS,
-    COMMAND_GATE, COMMAND_GATE_SAFE, PITCH_FLOOR, PITCH_FLOOR_CHANGEUP,
-    PITCH_COLUMNS, PITCH_EROSION, DEFENSIVE_FLOORS,
-    PARK_OVERLAY, APPLY_PARK_OVERLAY,
-    WORK_ETHIC_MULT, APPLY_WORK_ETHIC, REGISTRY_VERSION,
-    RP_STUFF_DEFLATOR, ROLE_POSITIONS, ROLE_INNINGS, APPLY_ROLE_VOLUME,
-    POSITION_FALLBACK, MIN_REAL_PITCHES, MIRAGE_PENALTY,
-    EROSION_PENALTY_GRADES, TOOL_POSITION_GATES,
-    DEFENSIVE_SECONDARY, STARTER_FLOORS, POWER_CURVE,
-)
 
 # Column aliases: the exports don't agree on names.
 BAT_TOOLS = {
@@ -240,6 +251,100 @@ def decompose(proj):
     return {k: round(100 * v / tot) for k, v in parts.items() if v > 0}
 
 
+
+# ------------------------------------------------------------ A58 DEFENCE
+def def_runs(row, pos=None):
+    """
+    Defensive runs vs a league-average glove at this position [A58].
+
+    Term sizes, from the 162-team purpose-built league (7 seasons, TCR=100,
+    neutral parks, NOT burned in):
+      RANGE  dominates by an order of magnitude (2B 6.18 / SS 6.15 / CF 5.96
+             runs per +5 display; 1B only 1.40)
+      TDP    real and INDEPENDENT of range at SS/2B -- ~18% of range but 3x
+             errors, and it was DROPPED from the deployed ZR models by A29
+      ERROR  real but minor, roughly a tenth of range
+      ARM    ~0.00 runs at C/SS/3B/2B. CF +0.31, LF +0.20, RF +0.09 per +5.
+             It is a positional GATE, not a value term -- the gate lives in
+             effective_position(), not here.
+      C      returns 0.0. C_ABI is a DEAD NULL (p=.921, held at N=349 AND
+             N=1,044). Catchers are BAT-ONLY.
+
+    ⚠ The DP and error figures pass through RUNS_PER_DP / RUNS_PER_ERROR = 0.5,
+    which A58 flags explicitly as an ASSUMPTION carried in by analogy, never
+    independently derived. Range and arm are direct runs and carry no such step.
+    """
+    if not APPLY_DEF_RUNS:
+        return 0.0
+    if pos is None:
+        pos, _, _ = effective_position(row)
+    pos = str(pos).upper().split("/")[0].strip()
+    if pos == "C":
+        return 0.0                      # A58a -- bat-only, no defensive term
+
+    def grade(col):
+        v = pd.to_numeric(row.get(col), errors="coerce")
+        return None if pd.isna(v) else float(v) - DEF_BASELINE_GRADE
+
+    runs = 0.0
+    d = grade(DEF_RANGE_COL.get(pos, ""))
+    if d is not None and pos in RANGE_RUNS_PER_5:
+        runs += RANGE_RUNS_PER_5[pos] * d / 5.0
+    if pos in TDP_DP_PER_POINT:
+        d = grade("TDP")
+        if d is not None:
+            runs += TDP_DP_PER_POINT[pos] * d * RUNS_PER_DP
+    if pos in ERROR_ERRORS_PER_5:
+        d = grade(DEF_ERROR_COL.get(pos, ""))
+        if d is not None:
+            # stored as ERRORS AVOIDED per +5 (negative). Fewer errors = runs
+            # saved, so the sign flips on the way to runs.
+            runs += -ERROR_ERRORS_PER_5[pos] * d / 5.0 * RUNS_PER_ERROR
+    a5 = ARM_RUNS_PER_5.get(pos, 0.0)
+    if a5:
+        d = grade(DEF_ARM_COL.get(pos, ""))
+        if d is not None:
+            runs += a5 * d / 5.0
+    return round(runs, 1)
+
+
+def def_runs_breakdown(row, pos=None):
+    """Per-term defensive runs, so the card can show WHERE the glove value is."""
+    if pos is None:
+        pos, _, _ = effective_position(row)
+    pos = str(pos).upper().split("/")[0].strip()
+    out = {}
+    if pos == "C":
+        return {"(catchers are bat-only -- A58a)": 0.0}
+
+    def grade(col):
+        v = pd.to_numeric(row.get(col), errors="coerce")
+        return None if pd.isna(v) else float(v) - DEF_BASELINE_GRADE
+
+    d = grade(DEF_RANGE_COL.get(pos, ""))
+    if d is not None and pos in RANGE_RUNS_PER_5:
+        out["Range"] = round(RANGE_RUNS_PER_5[pos] * d / 5.0, 1)
+    if pos in TDP_DP_PER_POINT:
+        d = grade("TDP")
+        if d is not None:
+            out["TDP"] = round(TDP_DP_PER_POINT[pos] * d * RUNS_PER_DP, 1)
+    if pos in ERROR_ERRORS_PER_5:
+        d = grade(DEF_ERROR_COL.get(pos, ""))
+        if d is not None:
+            out["Errors"] = round(-ERROR_ERRORS_PER_5[pos] * d / 5.0 * RUNS_PER_ERROR, 1)
+    a5 = ARM_RUNS_PER_5.get(pos, 0.0)
+    if a5:
+        d = grade(DEF_ARM_COL.get(pos, ""))
+        if d is not None:
+            out["Arm"] = round(a5 * d / 5.0, 1)
+    return out
+
+
+def score_total(row, proj, pos=None):
+    """Bat runs [A57] + glove runs [A58] -- the number to rank a fielder on."""
+    return round(score_batter(proj) + def_runs(row, pos), 1)
+
+
 # ------------------------------------------------------------------ pitchers
 def project_pitcher(row, apply_gate=True):
     """
@@ -286,6 +391,17 @@ def score_pitcher(proj, row=None):
             v = max(0.0, v - RP_STUFF_DEFLATOR)
         s += w * v
     if row is not None:
+        # ── A59 (v15.45): ARSENAL DEPTH IS AN INDEPENDENT VALUE TERM and was
+        # captured NOWHERE in this model. +0.89 ERA+ per real pitch controlling
+        # for STU/MOV/CON -- about 80% of a full movement RATING point, which is
+        # how it converts onto this weighted-sum scale. Peaks at 5.
+        # ⚠ This REVERSES A14 Study 2 ("more effective pitches is monotonically
+        # worse"). The reconciliation is the quality floor: A14 counted pitches
+        # at grade >=30, A59 counts them at the A41 crossover (>=40, CH >=45).
+        if APPLY_ARSENAL_DEPTH:
+            n_real, _ = real_pitches(row)
+            s += (PITCHER_WEIGHTS.get("MOV", 1.6) * ARSENAL_DEPTH_RATING_EQUIV
+                  * (n_real - STARTER_ARSENAL_TARGET))
         ok, _, _ = arsenal_ok(row)
         if not ok:
             s *= MIRAGE_PENALTY
@@ -372,15 +488,56 @@ def below_starter_floor(row):
             f"{med}) -- playable, but a bat-first fit there")
 
 
+def age_norm_pitches(age):
+    """Mean real pitches for his age [A59c]. Flat bars judge teens against
+    28-year-olds: the age-17 mean is 1.05, the age-28 mean is 3.02."""
+    try:
+        a = int(age)
+    except (TypeError, ValueError):
+        return None
+    if a in MEAN_REAL_PITCHES_BY_AGE:
+        return MEAN_REAL_PITCHES_BY_AGE[a]
+    lo, hi = min(MEAN_REAL_PITCHES_BY_AGE), max(MEAN_REAL_PITCHES_BY_AGE)
+    return MEAN_REAL_PITCHES_BY_AGE[lo if a < lo else hi]
+
+
+def arsenal_vs_age(row):
+    """(real pitches, age norm, difference). None norm when age is missing."""
+    n, _ = real_pitches(row)
+    norm = age_norm_pitches(pd.to_numeric(row.get("Age"), errors="coerce"))
+    return n, norm, (None if norm is None else round(n - norm, 2))
+
+
 def arsenal_ok(row):
-    """A41: does he have a usable arsenal, or is his Stuff built on mirages?"""
+    """
+    A41 + A59c: does he have a usable arsenal, or is his Stuff built on mirages?
+
+    ⚠ v15.45 -- the test is now AGE-RELATIVE. A flat 2-pitch bar marked every
+    teenager a mirage; at 17-18 the population mean is 1.05-1.57 real pitches,
+    so two is ABOVE average there. Only at 22+ is sub-3 a genuine warning.
+    """
     n, names = real_pitches(row)
-    return n >= MIN_REAL_PITCHES, n, names
+    if not APPLY_AGE_RELATIVE_ARSENAL:
+        return n >= MIN_REAL_PITCHES, n, names
+    norm = age_norm_pitches(pd.to_numeric(row.get("Age"), errors="coerce"))
+    if norm is None:
+        return n >= MIN_REAL_PITCHES, n, names
+    return (n >= MIN_REAL_PITCHES) or (n >= norm - ARSENAL_AGE_TOLERANCE), n, names
 
 
 def below_command_gate(row):
+    """
+    ⚠ RETURNS FALSE BY DEFAULT AT v15.45. The break-even is an INTERNAL value
+    (~310-320 of 1-600) and the CARD equivalent is UNCALIBRATED -- "CON 35" was
+    a 1-100 test-league value running ~1.65x hot, and "CON 40" assumes pitcher
+    Control shares the BATTING breakpoint table, which was never tested.
+    Gating a live usage call on it is methodology rule 1. Flip
+    APPLY_COMMAND_GATE once the editor breakpoint check lands.
+    """
+    if not APPLY_COMMAND_GATE or COMMAND_GATE_CARD is None:
+        return False
     con = pd.to_numeric(row.get("CON_1"), errors="coerce")
-    return (not pd.isna(con)) and con < COMMAND_GATE
+    return (not pd.isna(con)) and con < COMMAND_GATE_CARD
 
 
 # --------------------------------------------------------------------- flags
@@ -436,7 +593,12 @@ def flag_pitcher(row, proj):
     f = []
     con = pd.to_numeric(row.get("CON_1"), errors="coerce")
     op, og = out_pitch(row)
-    if not pd.isna(con):
+    if not pd.isna(con) and not APPLY_COMMAND_GATE:
+        f.append(f"command CON {int(con)} -- ⚠ NOT GATED: the erosion break-even "
+                 f"is INTERNAL ~{COMMAND_GATE_INTERNAL[0]}-{COMMAND_GATE_INTERNAL[1]} "
+                 f"(1-600) and the card equivalent is UNCALIBRATED. No usage call "
+                 f"may rest on this number yet.")
+    elif not pd.isna(con):
         if con <= COMMAND_GATE - 5:
             note = ""
             if op and PITCH_EROSION.get(op) == "erodes":
@@ -448,12 +610,23 @@ def flag_pitcher(row, proj):
             f.append(f"CLEARS COMMAND GATE (CON {int(con)}) -- work him freely")
         else:
             f.append(f"AT THE COMMAND GATE (CON {int(con)}) -- neutral")
-    n, names = real_pitches(row)
+    n, norm, vs = arsenal_vs_age(row)
+    names = real_pitches(row)[1]
+    tag = "" if vs is None else f", {vs:+.2f} vs the age-{int(pd.to_numeric(row.get('Age'), errors='coerce'))} norm of {norm:.2f}"
     if n <= 1:
-        f.append(f"MIRAGE ARSENAL: only {n} pitch clears the A41 floor "
+        f.append(f"MIRAGE ARSENAL: only {n} pitch clears the A41 floor{tag} "
                  f"-- ignore projected grades")
     else:
-        f.append(f"{n} real pitches ({'/'.join(names)})")
+        f.append(f"{n} real pitches ({'/'.join(names)}){tag}")
+    if vs is not None and vs >= 1.0:
+        f.append(f"DEPTH EDGE: {vs:+.2f} real pitches vs his age norm "
+                 f"-- worth ~{0.89 * vs:+.1f} ERA+, and the deployed F2 prices "
+                 f"depth at the WRONG SIGN, so the market cannot see it [A59]")
+    if n >= STARTER_ARSENAL_OPTIMAL:
+        f.append(f"{n} real pitches -- at or past the ERA+ peak (5) [A59a]")
+    elif n < STARTER_ARSENAL_TARGET and (vs is None or vs < 0):
+        f.append(f"below the {STARTER_ARSENAL_TARGET}-pitch keep-bar for a "
+                 f"STARTER; a 2-pitch arm is a reliever, not unusable [A59a]")
     age = pd.to_numeric(row.get("Age"), errors="coerce")
     if not pd.isna(age) and age >= 25:
         f.append("ARM DEVELOPMENT DONE (25+)")
@@ -498,4 +671,30 @@ def positional_bars(league_df):
             "No recognised fielding positions in the population file. Expected "
             "POS values like C / 1B / 2B / 3B / SS / LF / CF / RF."
         )
+    return d.groupby("P0").score.mean().round(1).to_dict(), d.score.values
+
+
+def positional_bars_total(league_df):
+    """
+    Same as positional_bars but on BAT + GLOVE runs [A57 + A58].
+
+    Separate function on purpose: positional_bars() keeps its exact signature so
+    nothing that already calls it can break. Same discipline as that function --
+    the bar is produced by the SAME scorer as the players, never an inline sum.
+    """
+    b = league_df[league_df.apply(is_batter, axis=1)].copy()
+    if "ORG" in b.columns:
+        keep = b[b["ORG"].astype(str).str.strip() != "-"]
+        if len(keep):
+            b = keep
+    rows = []
+    for _, r in b.iterrows():
+        p0, _, _ = effective_position(r)
+        rows.append({"P0": p0, "score": score_total(r, project_batter(r), p0)})
+    if not rows:
+        raise ValueError("No batters found in the population file.")
+    d = pd.DataFrame(rows)
+    d = d[d["P0"].isin(["C", "1B", "2B", "3B", "SS", "LF", "CF", "RF"])]
+    if not len(d):
+        raise ValueError("No recognised fielding positions in the population file.")
     return d.groupby("P0").score.mean().round(1).to_dict(), d.score.values
