@@ -1,0 +1,58 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ootp27-suite — three services, one shared registry spine.
+#
+#   :8502  /27/     ootp27-suite   full Suite   ⚠ LEGACY, see note below
+#   :8503  /rank/   ootp-rank      Player Rank      ✅ registry v15.45
+#   :8504  /lineup/ ootp-lineup    Lineup Optimizer ✅ registry v15.45
+#
+# ⚠ ALL THREE build from the REPO ROOT context, so dev_constants.py and
+# dev_model.py land at /app in every image. There is exactly ONE copy of every
+# registry constant. /rank/ and /lineup/ read from it and hold no private
+# coefficients, so they cannot drift from each other or from the registry.
+#
+# ⚠ THE SUITE (:8502) IS A VERSION BEHIND ON BATTER VALUE. acquisitions.off_f1
+# runs the pre-A57 OLS weights (POW 6.8 / EYE 4.9 / BABIP 3.2 / GAP 1.6 /
+# AVK 1.4), its ZR_MODELS drop TDP and over-weight arm (pre-A58), and
+# park_fit.py still carries A22's refuted concave POW quadratic. It is fenced,
+# not fixed -- deliberately, because porting 3,799 lines to repair tools that
+# are not currently in use is the failure mode that took the suite down three
+# times. DO NOT compare a number from :8502 against one from :8503 / :8504.
+# ═══════════════════════════════════════════════════════════════════════════
+services:
+  ootp27-suite:
+    build: .
+    container_name: ootp27-suite
+    ports:
+      - "8502:8501"
+    volumes:
+      - ootp27_data:/app/data
+    restart: unless-stopped
+    environment:
+      - OOTP_DATA_DIR=/app/data
+      - APP_PASSWORD=${APP_PASSWORD:?set APP_PASSWORD in .env}
+
+  ootp-rank:
+    build:
+      context: .
+      dockerfile: rank/Dockerfile
+    container_name: ootp-rank
+    ports:
+      - "8503:8501"
+    restart: unless-stopped
+    environment:
+      - APP_PASSWORD=${APP_PASSWORD:?set APP_PASSWORD in .env}
+
+  ootp-lineup:
+    build:
+      context: .
+      dockerfile: lineup/Dockerfile
+    container_name: ootp-lineup
+    ports:
+      - "8504:8501"
+    restart: unless-stopped
+    environment:
+      - APP_PASSWORD=${APP_PASSWORD:?set APP_PASSWORD in .env}
+
+volumes:
+  ootp27_data:
+    driver: local
