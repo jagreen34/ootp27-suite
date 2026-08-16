@@ -6,10 +6,10 @@ WHY THIS FILE EXISTS: these constants moved four times in two weeks
 (A31 -> A45 -> A46 -> A56). If a finding is revised, edit HERE ONLY.
 Never inline a magic number anywhere else in the suite.
 
-Registry: OOTP27_Research_Log_v15_42 / Production Spec v15_42 / Eval Guide v8
+Registry: OOTP27_Research_Log v15.45 (A1-A61) / Roster Eval Guide v11
 """
 
-REGISTRY_VERSION = "v15.42"
+REGISTRY_VERSION = "v15.45"
 
 # --------------------------------------------------------------------------
 # A50 -- INTERNAL (1-600) <-> DISPLAY (20-80) MAP.  Editor-verified, FIXED
@@ -140,6 +140,26 @@ PITCHER_DEVELOPING_TOOLS = ("MOV", "CON")
 # Relief is NOT a preservation lever (erodes as much as starting) and it
 # STALLS changeup growth. Manage via command, not role.
 # --------------------------------------------------------------------------
+# ⚠⚠ WITHDRAWN v15.45 -- THE CARD TRANSLATION IS NOT CALIBRATED.
+# What is LOCKED: the erosion break-even is an INTERNAL control value of
+# ~310-320 on the 1-600 scale. That much is invariant.
+# What is NOT known: the equivalent number on a live AC 20-80 card.
+#   * "CON 35" came from a Test-league 1-100 export running ~1.65x hot -> dead.
+#   * "CON 40" assumes pitcher Control shares the BATTING ratings' internal->
+#     display breakpoints (40 = internal 299-350). THAT HAS NEVER BEEN TESTED.
+# Methodology rule 1: never let an unmeasured constant carry a conclusion.
+# Until the breakpoint check runs, NO pitcher-usage call may be gated on a
+# card CON. The machinery is kept so the answer drops straight in.
+#   THE CHECK (5 min, engine-exact): open a pitcher in the editor, set Control
+#   to 298 / 299 / 350 / 351, read the display each time. Flips at 299 and 351
+#   => shares the batting table => COMMAND_GATE_CARD = 40. Flips elsewhere =>
+#   read the real boundaries. See HANDOFF_pitcher_control_breakpoints.md.
+COMMAND_GATE_INTERNAL = (310, 320)   # LOCKED [A54]
+COMMAND_GATE_CARD = None             # ⚠ UNCALIBRATED -- set only after the check
+APPLY_COMMAND_GATE = False           # gating stays OFF while CARD is None
+
+# Provisional display values, used ONLY for wording a flag -- never to gate,
+# erode, or score. Live only when APPLY_COMMAND_GATE is turned on.
 COMMAND_GATE = 40
 COMMAND_GATE_SAFE = 45
 
@@ -194,24 +214,19 @@ DEFENSIVE_SECONDARY = {       # HARD, second tool -- both must clear
 STARTER_FLOORS = {            # FLAG ONLY -- league median at the position
     "SS": ("IF RNG", 65),
     "CF": ("OF RNG", 60),
-    "C":  ("C ABI", 60),
+    # ⚠ "C": ("C ABI", 60) REMOVED v15.45 -- that flag PRICED catcher defence,
+    # and C_ABI is a dead null [A58a, p=.921 at N=1,044]. The hard floor in
+    # DEFENSIVE_FLOORS stays: it answers "can he physically catch", which is an
+    # ELIGIBILITY question A58 does not touch. Quality screening is what died.
     "3B": ("IF ARM", 60),
     "2B": ("IF RNG", 55),
 }
 
 # --------------------------------------------------------------------------
-# PARK -- Quakers home park. HR x1.30 rewards POW; 2B x0.95 / 3B x0.90 taxes
-# GAP. NOTE: the K-T multiverse is park-NEUTRAL (all park factors exactly
-# 1.000), so BATTER_WEIGHTS are park-blind. This overlay is a judgement
-# adjustment, NOT a measured coefficient. Off by default.
-# --------------------------------------------------------------------------
-# ⚠ DERIVED, NOT FITTED. The multiverse the weights came from is park-NEUTRAL
-# (every PF column is exactly 1.000), so no park coefficient can be fit on it.
-# Reasoning: HR x1.30 at home, ~0 away -> ~15% over a full season. 2B x0.95 /
-# 3B x0.90 average ~0.93, halved -> ~0.96. Park factors are SYMMETRIC (they
-# boost the opponent too), so this is an EDGE multiplier, not a production one.
-# Replace with a fitted value once AC historical team-seasons are in hand --
-# ~30 seasons x 28 teams with real park variation would measure it properly.
+# PARK -- Quakers home park: HR x1.30 rewards POW; 2B x0.95 / 3B x0.90 taxes GAP.
+# (The earlier "DERIVED, NOT FITTED / judgement adjustment" block was REMOVED at
+# v15.45 -- it was superseded by A57d and the two contradicted each other in the
+# same file.)
 # ⚠ FITTED [A57d], not derived. The engine's event counts run through the
 # Quakers factors (HR x1.30 / 2B x0.95 / 3B x0.90), half-home/half-road.
 # Replaces the old blanket 1.15 guess -- the only coefficient in the system
@@ -319,10 +334,22 @@ BATTER_LEAGUE_MEANS = {
 #   to the batter convention, NOT by citation.
 #   >> If pitcher F1 output looks off-scale against known AC WAR totals, CHECK
 #      THIS ASSUMPTION FIRST. <<
-# NOTE: BATTER_WEIGHTS above is now the A57 ENGINE-EXACT set, whose unit is
-# RUNS PER DISPLAY GRADE (600-PA season) -- a DIFFERENT unit from the A44/A53
-# wRC+-per-10-points convention this warning was written against. Any code
-# mixing the two must convert explicitly.
+# ⚠⚠ CORRECTED v15.45 -- A PREVIOUS NOTE HERE CLAIMED "BATTER_WEIGHTS above is
+# now the A57 ENGINE-EXACT set". THAT WAS FALSE and is removed. BATTER_WEIGHTS
+# still holds the PRE-A57 OLS values (POW 6.8 / EYE 4.9 / BABIP 3.2 / GAP 1.6 /
+# AVK 1.4) and its unit IS wRC+-per-10-rating-points, exactly as the warning
+# above says. The "# UNIT: RUNS PER DISPLAY GRADE [A57]" comment near line 89
+# attaches DOWNWARD to BATTER_RUNS_PER_GRADE. Reading it upward produced the
+# false note -- and a false note is worse than the gap it describes, because it
+# tells the next reader the port is finished.
+#
+# WHERE EACH SET IS ACTUALLY USED:
+#   acquisitions.off_f1  -> BATTER_WEIGHTS (OLS, /10, x WINS_PER_SD['wRC+'])
+#   dev_model.score_batter -> BATTER_RUNS_PER_GRADE + POWER_CURVE  [A57]
+# dev_model imports it as `BATTER_RUNS_PER_GRADE as BATTER_WEIGHTS`, so THE SAME
+# IDENTIFIER MEANS DIFFERENT THINGS IN DIFFERENT FILES and /rank/ and /27/
+# currently rank batters differently. Do not compare a number across the two.
+# STANDING RULE: never alias a constant to a different constant's name.
 
 # ...frozen snapshot continues:
 # The AC rating distribution moves slowly within a season but turns over across
@@ -419,3 +446,38 @@ MEAN_REAL_PITCHES_BY_AGE = {
 # WAR), and only 5.7% of qualified starter-seasons carry fewer than 3.
 STARTER_ARSENAL_TARGET = 3
 STARTER_ARSENAL_OPTIMAL = 5
+
+
+# ==========================================================================
+# v15.45 WIRING CONSTANTS -- added so the A58/A59 blocks above are actually
+# USED. Every constant they need existed already; nothing imported them.
+# ==========================================================================
+
+# Baseline the defensive terms are measured against. A58 reports runs per +5
+# DISPLAY points, so a zero point is required to turn a rating into runs.
+# 50 = "league-average glove" by convention. ⚠ CONVENTION, NOT MEASURED --
+# it shifts every defensive number by a constant and therefore does NOT
+# reorder anyone, but a displayed runs figure inherits it.
+DEF_BASELINE_GRADE = 50.0
+APPLY_DEF_RUNS = True
+
+# Column names the defensive terms read, by position.
+DEF_RANGE_COL = {"2B": "IF RNG", "SS": "IF RNG", "3B": "IF RNG", "1B": "IF RNG",
+                 "LF": "OF RNG", "CF": "OF RNG", "RF": "OF RNG"}
+DEF_ERROR_COL = {"2B": "IF ERR", "SS": "IF ERR", "3B": "IF ERR",
+                 "LF": "OF ERR", "CF": "OF ERR", "RF": "OF ERR"}
+DEF_ARM_COL   = {"2B": "IF ARM", "SS": "IF ARM", "3B": "IF ARM",
+                 "LF": "OF ARM", "CF": "OF ARM", "RF": "OF ARM"}
+
+# A59 -- convert arsenal depth into the PITCHER_WEIGHTS scale. Depth is worth
+# +0.89 ERA+ per real pitch; MOV is +1.09 ERA+ per RATING point. So one real
+# pitch == 0.89/1.09 = 0.817 movement rating points, which is what makes it
+# commensurable with the existing weighted-sum score.
+MOV_ERAPLUS_PER_RATING_POINT = 1.09
+ARSENAL_DEPTH_RATING_EQUIV = ARSENAL_DEPTH_ERAPLUS_PER_PITCH / MOV_ERAPLUS_PER_RATING_POINT
+APPLY_ARSENAL_DEPTH = True
+
+# A59c -- the arsenal screen is AGE-RELATIVE. A flat 2-pitch mirage test judges
+# a 17-year-old (mean 1.05 real pitches) against a 28-year-old (3.02).
+APPLY_AGE_RELATIVE_ARSENAL = True
+ARSENAL_AGE_TOLERANCE = 1.0   # real pitches below his age norm before penalising
