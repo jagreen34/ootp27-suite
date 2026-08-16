@@ -1,3 +1,9 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ⚠⚠  THIS FILE IS  rank/app.py  —  IT IS **NOT** THE REPO-ROOT app.py.  ⚠⚠
+# The repo has two files named app.py. This one lives in the rank/ folder and
+# is the Player Rank page (:8503). Uploading it over the root app.py will
+# replace the whole OOTP 27 Suite entrypoint.
+# ═══════════════════════════════════════════════════════════════════════════
 """
 OOTP Player Rank — percentile analysis against an uploaded population.
 
@@ -63,6 +69,12 @@ from dev_model import (
     positional_bars, budget, is_batter, is_pitcher,
     effective_position, role_of, arsenal_ok,
     playable_positions, listed_positions, park_delta,
+    # ── v15.45 ──────────────────────────────────────────────────────────────
+    # A58 defensive value + A59 arsenal depth. Both sets of constants had been
+    # sitting in dev_constants.py unused: batters were ranked with NO glove
+    # value at all, and depth was invisible on the pitcher side.
+    def_runs, def_runs_breakdown, score_total, positional_bars_total,
+    arsenal_vs_age, age_norm_pitches,
 )
 
 POSITIONS = ["C", "1B", "2B", "3B", "SS", "LF", "CF", "RF"]
@@ -88,8 +100,12 @@ def load_cached(b):
 
 
 @st.cache_data(show_spinner=False)
-def bars_cached(b):
-    return positional_bars(load_cached(b))
+def bars_cached(b, with_def):
+    """Bars must be produced by the SAME scorer as the players -- that is the
+    v15.44 lesson (an inline sum put bars at ~70 while scores ran 13-84 and
+    made every vsBar meaningless)."""
+    return (positional_bars_total(load_cached(b)) if with_def
+            else positional_bars(load_cached(b)))
 
 
 def pct(series, value):
@@ -109,13 +125,21 @@ mode = st.sidebar.radio("Channel", ["Batters", "Pitchers"])
 show_projected = st.sidebar.checkbox(
     "Project to end of development", value=True,
     help="Applies the A56 age budget. Off = rank on current ratings only.")
+include_defense = st.sidebar.checkbox(
+    "Include defensive runs (A58)", value=True,
+    help="Ranks bats on BAT + GLOVE runs. Range dominates (2B 6.18 / SS 6.15 / "
+         "CF 5.96 runs per +5); TDP is real and independent of range at SS/2B; "
+         "errors are ~1/10th of range; arm is a positional GATE, not a value "
+         "term. Catchers score 0 glove runs -- C_ABI is a dead null (p=.921). "
+         "Off = the old bat-only ranking.")
 st.sidebar.markdown("---")
 st.sidebar.caption(f"registry {K.REGISTRY_VERSION}")
 st.sidebar.caption("Return to [home](/)")
 
 st.title("📊 OOTP Player Rank")
 st.caption(f"Percentile analysis against an uploaded population · "
-           f"registry {K.REGISTRY_VERSION} · bars recomputed from YOUR file every run")
+           f"registry {K.REGISTRY_VERSION} · bars recomputed from YOUR file every run · "
+           f"bat [A57] + glove [A58] + arsenal depth [A59]")
 
 if league_file is None:
     st.info("Upload a league-wide export to begin. **Every bar and percentile "
@@ -123,7 +147,7 @@ if league_file is None:
     st.stop()
 
 league_df = load(league_file)
-bars, league_scores = bars_cached(league_file.getvalue())
+bars, league_scores = bars_cached(league_file.getvalue(), include_defense)
 target_df = load(target_file) if target_file is not None else league_df
 
 c1, c2, c3 = st.columns(3)
@@ -156,7 +180,8 @@ def render_card(row_src, proj, sc, bar, pool, mode_is_bat):
     if mode_is_bat:
         p0, moved, why = effective_position(row_src)
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Runs (projected)", f"{sc:.1f}")
+        c1.metric("Runs (projected)" + (" — bat+glove" if include_defense else ""),
+                  f"{sc:.1f}")
         if bar:
             c2.metric(f"vs {p0} bar", f"{sc - bar:+.1f}")
         if pool is not None:
@@ -181,7 +206,13 @@ def render_card(row_src, proj, sc, bar, pool, mode_is_bat):
 
         d1, d2 = st.columns(2)
         with d1:
-            st.markdown("**Defense** *(fixed — current IS truth)*")
+            if include_defense:
+                dr = def_runs(row_src, p0)
+                st.markdown(f"**Defense — {dr:+.1f} runs at {p0}** *[A58]*")
+                bd = def_runs_breakdown(row_src, p0)
+                if bd:
+                    st.caption(" · ".join(f"{k} {v:+.1f}" for k, v in bd.items()))
+            st.markdown("**Defensive tools** *(fixed — current IS truth)*")
             dcols = [c for c in ["IF RNG", "IF ARM", "IF ERR", "TDP",
                                  "OF RNG", "OF ARM", "OF ERR", "C ABI", "C ARM", "SPE"]
                      if c in row_src and pd.notna(pd.to_numeric(row_src.get(c), errors="coerce"))]
@@ -239,7 +270,7 @@ def _raw_batter_proj(r):
 
 
 @st.cache_data(show_spinner=False)
-def league_batter_pools(_df_bytes, projected):
+def league_batter_pools(_df_bytes, projected, with_def):
     """
     Score the league population ONCE and bucket by effective position.
     Cached on the uploaded file's bytes + the projection toggle, so changing
@@ -254,11 +285,11 @@ def league_batter_pools(_df_bytes, projected):
             t: pd.to_numeric(r.get(c), errors="coerce") for t, c in
             [("POW", "POW"), ("EYE", "EYE"), ("BABIP", "BABIP"),
              ("GAP", "GAP"), ("AVK", "K's")]}
-        sc = score_batter(proj)
+        p0, _, _ = effective_position(r)
+        sc = score_total(r, proj, p0) if with_def else score_batter(proj)
         if not sc:
             continue
         all_scores.append(sc)
-        p0, _, _ = effective_position(r)
         by_pos.setdefault(p0, []).append(sc)
     return (pd.Series(all_scores),
             {k: pd.Series(v) for k, v in by_pos.items()})
@@ -270,17 +301,19 @@ def build_batters(df, all_pool, pos_pools):
         if not is_batter(r):
             continue
         proj = _raw_batter_proj(r)
-        sc = score_batter(proj)
+        p0, moved, _ = effective_position(r)
+        bat = score_batter(proj)
+        dfn = def_runs(r, p0) if include_defense else 0.0
+        sc = round(bat + dfn, 1) if include_defense else bat
         if not sc:
             continue
-        p0, moved, _ = effective_position(r)
         bar = bars.get(p0)
         pool = pos_pools.get(p0)
         rows.append({
             "Name": r.get("Name"), "Org": org_of(r), "POS": r.get("POS"),
             "Plays": p0 + ("*" if moved else ""),
             "Age": pd.to_numeric(r.get("Age"), errors="coerce"),
-            "Score": sc,
+            "Score": sc, "Bat": bat, "Def": dfn,
             "Pct@POS": pct(pool, sc) if pool is not None else np.nan,
             "PctAll": pct(all_pool, sc),
             "vsBar": round(sc - bar) if bar else np.nan,
@@ -311,7 +344,8 @@ def build_pitchers(df):
             "Role": role_of(r),
             "Age": pd.to_numeric(r.get("Age"), errors="coerce"),
             "Score": sc, "STU": proj.get("STU"), "MOV": proj.get("MOV"),
-            "CON": proj.get("CON"), "RealPitches": n,
+            "CON": proj.get("CON"), "HRA": pd.to_numeric(r.get("HRA"), errors="coerce"),
+            "RealPitches": n, "vsAgeNorm": arsenal_vs_age(r)[2],
             "_flags": flag_pitcher(r, proj),
         })
     d = pd.DataFrame(rows)
@@ -339,7 +373,7 @@ def league_pitcher_pool(_df_bytes, projected):
 
 with st.spinner("Scoring…"):
     if mode == "Batters":
-        all_pool, pos_pools = league_batter_pools(league_file.getvalue(), show_projected)
+        all_pool, pos_pools = league_batter_pools(league_file.getvalue(), show_projected, include_defense)
         d = build_batters(target_df, all_pool, pos_pools)
     else:
         d = build_pitchers(target_df)
@@ -386,31 +420,54 @@ if org_filter:
     v = v[v["Org"].isin(org_filter)]
 v = v.head(top_n)
 
-cols = (["Name", "Org", "POS", "Plays", "CanPlay", "Age", "Score", "Pct@POS",
-         "PctAll", "vsBar", "ParkD", "Budget", "POW", "EYE", "HT", "GAP", "AVK"]
+cols = (["Name", "Org", "POS", "Plays", "CanPlay", "Age", "Score", "Bat", "Def",
+         "Pct@POS", "PctAll", "vsBar", "ParkD", "Budget",
+         "POW", "EYE", "HT", "GAP", "AVK"]
         if mode == "Batters" else
         ["Name", "Org", "POS", "Role", "Age", "Score", "PctAll", "STU", "MOV",
-         "CON", "RealPitches"])
+         "HRA", "CON", "RealPitches", "vsAgeNorm"])
+if mode == "Batters" and not include_defense:
+    cols = [c for c in cols if c not in ("Bat", "Def")]
 # drop the Org column entirely when the file has no team info (draft pools)
 if "Org" in d.columns and not d["Org"].astype(str).str.strip().any():
     cols = [c for c in cols if c != "Org"]
 st.dataframe(v[[c for c in cols if c in v.columns]],
              hide_index=True, use_container_width=True)
 if mode == "Batters":
-    st.caption("**ParkD** = score under the Quakers park overlay minus neutral "
-               "(positive = the park helps him). ⚠ The multiplier is DERIVED "
-               "(HR ×1.30 at home ≈ +15% over a season), **not fitted** — the "
-               "multiverse the weights came from is park-neutral. "
+    st.caption("**Score** = Bat + Def when defensive runs are on. "
+               "**Bat** is runs above a display-25 baseline [A57]; **Def** is runs "
+               "above an average (display-50) glove [A58] — different zero points, "
+               "but the positional bar is computed on the same total, so **vsBar** "
+               "is consistent. Range dominates Def by an order of magnitude; TDP is "
+               "real and independent of range at SS/2B; **arm is a gate, not a value "
+               "term**; catchers score 0 — C_ABI is a dead null (p=.921 at N=1,044). "
+               "⚠ The TDP and error runs pass through an assumed 0.5 runs each, "
+               "which A58 flags as carried in by analogy, not derived. "
+               "**ParkD** = score under the Quakers park overlay minus neutral "
+               "(positive = the park helps him). The multiplier is **FITTED** "
+               "[A57d] — POW ×1.183, GAP ×0.935, EYE exactly 1.000 (walks are "
+               "park-proof, confirmed by direct falsification at p=0.500), "
+               "BABIP/AvK ×0.993. "
                "**CanPlay** = positions his TOOLS allow, not his experience. "
                "**Plays** = the position he can actually hold; `*` means he "
                "misses the defensive floor at his listed position and has been "
                "re-barred at the fallback. Gloves are FIXED [A50].")
 else:
-    st.caption("**Gates applied to the score:** RP/CL Stuff is deflated 5 pts "
-               "(SP→RP conversion inflates Stuff ~+5); an arsenal with fewer "
-               "than 2 pitches clearing the A41 floor is penalised. With "
-               "projection ON, an arm below the CON 40 command gate has his "
-               "out-pitch eroded [A54].")
+    st.caption("**Score** now carries **arsenal depth** [A59]: +0.89 ERA+ per real "
+               "pitch controlling for STU/MOV/CON — about 80% of a full movement "
+               "rating point, peaking at 5 pitches. This REVERSES A14 Study 2; the "
+               "reconciliation is the quality floor (A14 counted grade ≥30, A59 "
+               "counts the A41 crossover ≥40 / CH ≥45). **vsAgeNorm** = real pitches "
+               "minus the mean for his age — the screen is AGE-RELATIVE, since the "
+               "age-17 mean is 1.05 and the age-28 mean is 3.02, so a flat 3-pitch "
+               "bar judges teenagers against 28-year-olds. "
+               "**HRA** is the park-critical movement rating for this yard. "
+               "Other gates: RP/CL Stuff deflated 5 pts (SP→RP inflates it ~+5); a "
+               "mirage arsenal is penalised. "
+               "⚠ **The command gate is WITHDRAWN and no longer applied.** The "
+               "break-even is an INTERNAL value (~310–320 of 1–600); the card "
+               "equivalent is UNCALIBRATED, so no usage call may rest on it until "
+               "the editor breakpoint check runs.")
 
 st.markdown("---")
 pick = st.selectbox("🔍 Player card", ["—"] + v["Name"].astype(str).tolist(),
