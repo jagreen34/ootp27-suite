@@ -1,0 +1,266 @@
+"""
+OOTP 27 Evaluation Suite — v1.0
+Flat navigation | v15.17 registry locked | SQLite persistence | Docker-ready
+
+Access gate: a shared-password check runs BEFORE anything else renders. The
+password is read from st.secrets["app_password"] (mount .streamlit/secrets.toml
+into the container) OR the APP_PASSWORD environment variable as a fallback.
+"""
+import os
+import streamlit as st
+
+# set_page_config MUST be the first Streamlit call.
+st.set_page_config(
+    page_title="OOTP 27 Suite",
+    page_icon="⚾",
+    layout="wide"
+)
+
+
+# ── ACCESS GATE ───────────────────────────────────────────────────────────────
+# Runs before any other Streamlit command or heavy import, so nothing renders
+# and no data loads until the shared league password is entered. Reads the
+# password from st.secrets first, then the APP_PASSWORD env var (Docker-friendly).
+def _expected_password():
+    try:
+        if "app_password" in st.secrets:
+            return st.secrets["app_password"]
+    except Exception:
+        pass
+    return os.environ.get("APP_PASSWORD")
+
+
+def check_password() -> bool:
+    expected = _expected_password()
+    # Fail loud (not open): if no password is configured, block rather than allow.
+    if not expected:
+        st.error(
+            "Access is not configured: set `app_password` in "
+            "`.streamlit/secrets.toml` or the `APP_PASSWORD` environment variable."
+        )
+        return False
+
+    def entered():
+        if st.session_state.get("pw") == expected:
+            st.session_state["auth_ok"] = True
+        else:
+            st.session_state["auth_ok"] = False
+        st.session_state.pop("pw", None)   # never keep the typed password around
+
+    if st.session_state.get("auth_ok"):
+        return True
+
+    st.title("⚾ OOTP 27 Suite")
+    st.text_input("Password", type="password", key="pw", on_change=entered)
+    if st.session_state.get("auth_ok") is False:
+        st.error("Incorrect password")
+    return False
+
+
+if not check_password():
+    st.stop()
+# ── everything below runs ONLY once authenticated ─────────────────────────────
+
+
+import pandas as pd
+import nav
+import db
+import acquisitions as acq
+import my_team as mt
+import lineups as ln
+import pitching as pit
+import draft as drf
+import development as dev
+import roster_construction_ui as rcu
+import player_lookup as pl
+import player_card as pc
+
+SECTIONS = [
+    "📊 My Team",
+    "🪪 Player Card",
+    "⚾ Lineups",
+    "🥎 Pitching",
+    "🔄 Acquisitions",
+    "📝 Draft",
+    "🧱 Roster Construction",
+    "🌱 Development",
+    "🧑 Player Lookup",
+    "⚙️ Settings",
+]
+
+def get_league():
+    return st.session_state.get('active_league', None)
+
+nav.render(st, "suite")
+st.title("⚾ OOTP 27 Suite")
+st.caption("v1.0 | v15.17 registry | F1.1 SP/RP | Full batter F1 reconstruction")
+st.warning(
+    "⚠ **Legacy batter values.** This Suite runs `acquisitions.off_f1` — the "
+    "pre-A57 OLS weights (POW 6.8 / EYE 4.9 / BABIP 3.2 / GAP 1.6 / AvK 1.4), "
+    "ZR models that drop TDP and over-weight arm (pre-A58), and A22's refuted "
+    "concave POW quadratic. It is **fenced, not fixed** — deliberately, because "
+    "porting it is what took the suite down three times. **Use 📊 Rank or "
+    "⚾ Lineup for evaluation, and never compare a batter number across them** "
+    "— both are internally consistent and they disagree.",
+    icon="⚠️")
+
+st.sidebar.header("🏟️ League")
+
+existing_leagues = db.list_leagues()
+CREATE_OPTION    = "➕ Create new league…"
+league_choices   = existing_leagues + [CREATE_OPTION]
+
+selected_league_name = st.sidebar.selectbox(
+    "Select league", league_choices,
+    index=0 if existing_leagues else len(league_choices) - 1,
+    key='league_select'
+)
+
+if selected_league_name == CREATE_OPTION:
+    new_name = st.sidebar.text_input("New league name", key='new_league_name',
+                                      placeholder="e.g. American Circuit")
+    if st.sidebar.button("Create", key='create_league_btn'):
+        if new_name.strip():
+            db.create_league(new_name.strip())
+            st.rerun()
+        else:
+            st.sidebar.error("Enter a league name.")
+    st.stop()
+
+if st.session_state.get('_loaded_league') != selected_league_name:
+    st.session_state['active_league']  = db.get_league(selected_league_name)
+    st.session_state['_loaded_league'] = selected_league_name
+    st.rerun()
+
+league = get_league()
+tc     = league.team_config
+complete, missing = league.team_config_complete()
+my_team = tc.get('my_team', '')
+mode    = tc.get('mode', 'Competing')
+
+if my_team:
+    st.sidebar.success(f"🏟️ {my_team} | {mode}")
+else:
+    st.sidebar.warning("⚠️ Team not configured — go to Acquisitions → Settings")
+
+pre_dl = league.is_pre_deadline()
+if pre_dl is True:
+    st.sidebar.info("📅 Pre-deadline window")
+elif pre_dl is False:
+    st.sidebar.info("📅 Offseason / post-deadline")
+
+st.sidebar.markdown("---")
+section = st.sidebar.radio("🛠️ Section", SECTIONS, key='section')
+st.sidebar.markdown("---")
+st.sidebar.button("🔒 Log out", on_click=lambda: st.session_state.update(auth_ok=False))
+st.sidebar.caption("Return to [home](/)")
+
+if section == "🔄 Acquisitions":
+    acq.render_acquisitions(league)
+
+elif section == "📊 My Team":
+    mt.render_my_team(league)
+
+elif section == "🪪 Player Card":
+    pc.render_player_card(league)
+
+elif section == "⚾ Lineups":
+    ln.render_lineups(league)
+
+elif section == "🥎 Pitching":
+    pit.render_pitching(league)
+
+elif section == "📝 Draft":
+    drf.render_draft(league)
+
+elif section == "🧱 Roster Construction":
+    rcu.render_roster_construction(league)
+
+elif section == "🌱 Development":
+    dev.render_development(league)
+
+elif section == "🧑 Player Lookup":
+    pl.render_player_lookup(league)
+
+elif section == "⚙️ Settings":
+    st.header("⚙️ Settings")
+    acq.render_team_config(league)
+
+    st.markdown("---")
+    st.subheader("League Management")
+
+    with st.expander("🗒️ League Notes"):
+        cfg   = league.get_config()
+        notes = st.text_area("Notes", value=cfg.get('notes', ''), height=120, key='lg_notes')
+        if st.button("Save Notes", key='lg_notes_save'):
+            league.save_config({'notes': notes})
+            st.success("Saved.")
+
+    with st.expander("📁 Season Archives"):
+        archives = league.list_season_archives()
+        with st.form("archive_form"):
+            c1, c2, c3 = st.columns(3)
+            with c1: arch_year   = st.number_input("Year", value=1976, min_value=1871, max_value=2100)
+            with c2: arch_record = st.text_input("Record", placeholder="72-90")
+            with c3: arch_finish = st.text_input("Finish", placeholder="3rd place")
+            arch_notes = st.text_area("Notes", height=60)
+            if st.form_submit_button("Archive Season"):
+                league.save_season_archive(arch_year, arch_record, arch_finish, arch_notes)
+                st.success(f"Season {arch_year} archived.")
+                st.rerun()
+        if archives:
+            for arch in archives:
+                c1, c2, c3, c4 = st.columns([1, 2, 3, 1])
+                c1.metric(str(arch['year']), arch.get('record', '—'))
+                c2.caption(arch.get('finish', ''))
+                c3.caption(arch.get('notes', ''))
+                if c4.button("🗑️", key=f"del_arch_{arch['year']}"):
+                    league.delete_season_archive(arch['year'])
+                    st.rerun()
+
+    with st.expander("⚙️ Formula Reference"):
+        st.subheader("Batter F1 (R²=0.738)")
+        st.code("WAR = OFF_WAR + DEF_WAR + POS_ADJ\n"
+                "OFF: CON, GAP, POW, EYE, SPE, AGE, POS, GBT, FBT, PA\n"
+                "DEF: per-position exposure-weighted fielding model\n"
+                "POS_ADJ: (PA/650) × positional_constant")
+        st.subheader("SP F1.1 (R²=0.779)")
+        st.code("v-splits: STU_vL, STU_vR, MOV_vL, MOV_vR, PIT_CON_vL, PIT_CON_vR\n"
+                "+ STM, velo_mid, IP, PBABIP, HRA\n"
+                "+ I_power and I_fb_k archetype interaction terms")
+        st.subheader("RP F1.1 (R²=0.571)")
+        st.code("Same v-split structure; separate archetype thresholds (STU≥65 for I_power)")
+        st.subheader("Trade Value")
+        st.code("TV = (F1 - 0.2) × control_window × POS_MULT\n"
+                "control_window = min(YEARS_LEFT, years_until_FA)\n"
+                "years_until_FA = max(0, 6 - (ML_YRS + ML_DAYS/76))")
+        st.subheader("Positional Multipliers")
+        st.dataframe(pd.DataFrame(list(acq.POS_MULT.items()), columns=['POS', 'Mult']),
+                     hide_index=True, use_container_width=False)
+        st.subheader("Delivery Rates — ⚠ SUPERSEDED (A31)")
+        st.warning(
+            "The constant-fraction delivery model below is RETIRED. A31 replaced it "
+            "with an age-budget/cliff model (development is an age budget, ~19 internal "
+            "pts/yr ages 21-23, cliff at 24-25, gap inert). Effective ceiling = "
+            "min(shown potential, current + age cap); see draft_export.eff_ceiling. "
+            "Do not use these fractions for projection — kept for provenance only."
+        )
+        st.code("[RETIRED — A31] Batter CON 0.48 | GAP 0.48 | POW 0.45 | EYE 0.28\n"
+                "[RETIRED — A31] Pitcher STU 0.53 | MOV 0.40 | CON 0.43\n"
+                "[RETIRED — A31] Expected mature = current + (potential - current) × delivery_rate")
+        st.subheader("Hard Rules")
+        st.markdown(
+            "- 6-man rotation, 37-GS hard cap (+3.2 WAR)\n"
+            "- Never carry 7+ RP\n"
+            "- Never draft RP before Round 4\n"
+            "- Unmotivated / Disruptive = auto-skip, never override\n"
+            "- Fragile = −40% to projected value\n"
+            "- PIT_CON < 40 = LOW-CON flag\n"
+            "- SP-capable / rotation gate: best pitch ≥ 50 + one secondary ≥ 40 "
+            "(routes fails to bullpen, never excludes). STM = innings volume, not "
+            "a gate; effective-pitch count is an inverted proxy. (A14)\n"
+            "- EYE never declines (increases through age 37)\n"
+            "- SP: MOV/STU decline at 28, CON holds to 32\n"
+            "- Batter peak age 25, hold to 28, decline 29+\n"
+            "- Service time: 76 days = 1 year | 3 yrs = arb | 6 yrs = FA"
+        )
