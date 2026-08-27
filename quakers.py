@@ -47,9 +47,22 @@ CTL_BUY = 50                           # at/above this it is worth paying for
 # --- Rule 10: stamina buys innings, not quality. Buy 50 and stop. [A14 S1/A80]
 STM_GATE = 50
 
-# --- Rule 7: HRA is the arm's best tool, ~2x control. Read HRA, never Overall
-# Movement — MOV is a derived display field that does not move home runs. [A88/A69]
+# --- Rule 7: HRA is the arm's best tool, 2.1x control and 1.8x stuff on the
+# within-player estimator. Read HRA, never Overall Movement — MOV is a derived
+# display field that does not move home runs. [A88 sec.2 / A69]
+#
+# NOTE the axis ORDER, because it is not the intuitive one:
+#   HRA -0.417  >  STUFF -0.236  >  CONTROL -0.200  >  STAMINA -0.046
+# Stuff outranks control. That overturned BOTH "stuff is worthless, r=0.001" AND
+# A86's revision of it to "weak, below control". Each rating buys exactly one
+# thing: movement buys home runs, stuff buys strikeouts, control buys walks —
+# and home runs are the run-prevention channel that decides games here. [A88]
 HRA_OK = 55
+
+# The ACE override: the eleven arms in the league who clear BOTH are the eleven
+# best, full stop. Requires both by construction, so it is unaffected by the
+# stuff/control reordering above. [A86 sec.4]
+ACE_HRA, ACE_CTL = 65, 55
 
 # --- Rule 12: what an edge can carry, in wRC+.
 BAND_IGNORE, BAND_TIEBREAK = 4, 10
@@ -136,7 +149,27 @@ def grade_arm(r, name):
     if hra < HRA_OK:      flags.append('HRA light')
     return {'side': 'ARM', 'eff': eff, 'role': role, 'HRA': hra, 'STU': stu,
             'control': ctl, 'ctl_band': ctl_v, 'STM': stm,
-            'verdict': 'clean pass' if not flags else '; '.join(flags)}
+            'verdict': arm_verdict(hra, eff, ctl, stm),
+            'detail': '; '.join(flags) if flags else '-'}
+
+def arm_verdict(hra, eff, ctl, stm):
+    """The bats' ladder, for arms. Tested in AXIS ORDER, not in column order:
+    the primary axis decides first and a failure there is not offset by anything
+    below it. This is the whole point — a 4-pitch arm with light HRA is a BAD
+    starter, and the old flag-list rendered that identically to 'stamina short'.
+    """
+    if hra >= ACE_HRA and ctl >= ACE_CTL:
+        return 'ACE — clears the league\'s top gate'          # A86 sec.4
+    if hra < HRA_OK:
+        return 'HRA LIGHT — fails the axis that matters'      # nothing below rescues this
+    if eff < STARTER_EFF:
+        return 'RELIEVER — real arm, thin arsenal'            # a ROLE verdict, not a demotion
+    if ctl < CTL_INERT:
+        return 'starter arsenal, CONTROL INERT'
+    soft = []
+    if ctl < CTL_BUY: soft.append('control marginal')
+    if stm < STM_GATE: soft.append('stamina short')
+    return 'ROTATION — clean pass' if not soft else 'rotation, fixable: ' + ', '.join(soft)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -184,20 +217,24 @@ def main():
                  x['lead_tool'], '%s %s' % (x['glove'], x['glove_detail']), x['verdict']))
 
     print('\n=== ARMS (%d) — sorted by HRA, the primary axis [A88] ===' % len(arms))
-    print('%-20s %-3s %-4s %-5s %-5s %-4s %-9s %-9s %-5s %s'
-          % ('name', 'pos', 'age', 'HRA', 'STU', 'eff', 'role', 'control', 'STM', 'verdict'))
+    print('%-20s %-3s %-4s %-5s %-5s %-4s %-9s %-5s %s'
+          % ('name', 'pos', 'age', 'HRA', 'STU', 'eff', 'control', 'STM', 'VERDICT'))
     for x in arms:
-        print('%-20s %-3s %-4s %-5.0f %-5s %-4d %-9s %-9s %-5.0f %s'
+        print('%-20s %-3s %-4s %-5.0f %-5s %-4d %-9s %-5.0f %s'
               % (x['Name'][:20], x['POS'], x['Age'], x['HRA'],
                  '-' if x['STU'] is None else '%.0f' % x['STU'],
-                 x['eff'], x['role'],
-                 '%.0f %s' % (x['control'], x['ctl_band']), x['STM'], x['verdict']))
+                 x['eff'], '%.0f %s' % (x['control'], x['ctl_band']),
+                 x['STM'], x['verdict']))
 
     core = [x for x in bats if x['tools'] >= 2 and x['lead_tool'] == 'yes']
     print('\n--- SUMMARY ---')
     print('  qualifying bats (2+ tools incl. power or eye): %d   [target 3-4, A94]' % len(core))
     print('  bats failing rule 2 (no power/eye): %d' % sum(1 for x in bats if x['tools'] and x['lead_tool'] == 'NO'))
     print('  bats failing their glove gate:      %d' % sum(1 for x in bats if x['glove'] == 'FAIL'))
+    print('  ROTATION-READY (HRA %d+ and %d+ pitches): %d   <- the arm analog of a qualifying bat'
+          % (HRA_OK, STARTER_EFF, sum(1 for x in arms if x['HRA'] >= HRA_OK and x['eff'] >= STARTER_EFF)))
+    print('  arms clearing the ACE gate (HRA %d+ & CON %d+): %d   [A86]'
+          % (ACE_HRA, ACE_CTL, sum(1 for x in arms if x['HRA'] >= ACE_HRA and x['control'] >= ACE_CTL)))
     print('  arms with HRA %d+ (THE number):      %d of %d   [1.8x stuff, 2.1x control, A88]'
           % (HRA_OK, sum(1 for x in arms if x['HRA'] >= HRA_OK), len(arms)))
     print('  arms at %d+ effective pitches:       %d of %d' % (STARTER_EFF, sum(1 for x in arms if x['eff'] >= STARTER_EFF), len(arms)))
