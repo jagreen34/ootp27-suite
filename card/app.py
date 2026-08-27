@@ -51,23 +51,23 @@ with st.sidebar:
     (st.success if usable else st.error)(msg)
     data_store.manage(st)
 
-def load_rows(kind: str, key: str):
-    """Drag-and-drop with memory: new upload OR anything cached in the volume."""
-    up = st.file_uploader("Drop a CSV export here", type=["csv"], key=key + "_up")
-    if up is not None:
-        path, notes = data_store.save(up, kind)
-        for n in notes:
-            st.info(n)
-        if path is None:
-            st.error("Upload was NOT saved — using it for this session only.")
-            return list(csv.DictReader(io.StringIO(up.getvalue().decode("utf-8", "replace"))))
-        st.success("Saved as %s" % path.name)
-    chosen = data_store.picker(st, "…or use a file you already uploaded", key + "_pick", kind)
-    if chosen is None:
+def load_rows(kind: str, key: str, also=()):
+    """One widget, not two. data_store.picker() renders the uploader in the
+    sidebar, saves a fresh upload automatically, and returns a FILE-LIKE object
+    (a Streamlit UploadedFile, or a SavedFile that quacks like one) — never a
+    path. Read the bytes off it; do not open() it."""
+    f = data_store.picker(st, "Drop a CSV export here", key, kind, also=also,
+                          help="Shared with Player Rank and Lineup — upload once, use anywhere.")
+    if f is None:
         return None
-    with open(chosen, newline="", encoding="utf-8", errors="replace") as f:
-        return list(csv.DictReader(f))
-
+    raw = f.read()
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    rows = list(csv.DictReader(io.StringIO(raw)))
+    if not rows:
+        st.error("%s parsed to zero rows — wrong file, or not a CSV?" % getattr(f, "name", "file"))
+        return None
+    return rows
 
 def _to_csv(rows):
     if not rows:
@@ -83,7 +83,7 @@ roster_tab, draft_tab, rules_tab = st.tabs(["Roster", "Draft pool", "The rules"]
 
 # ═══════════════════════════════ ROSTER ════════════════════════════════════
 with roster_tab:
-    rows = load_rows("roster", "roster")
+    rows = load_rows("roster", "roster", also=("league", "pool", "draftpool"))
     if rows:
         orgs = sorted({str(r.get("ORG", "")) for r in rows} - {"", "-"})
         org = st.selectbox("Organisation", ["(all)"] + orgs)
@@ -152,7 +152,7 @@ with draft_tab:
         st.error("draft_board.py did not import: %s" % e)
         DB = None
 
-    rows = load_rows("draftpool", "draft")
+    rows = load_rows("draftpool", "draft", also=("pool", "roster"))
     if rows and DB:
         scored, bad = [], []
         for r in rows:
