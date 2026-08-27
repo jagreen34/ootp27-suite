@@ -114,7 +114,9 @@ with roster_tab:
                 st.text("   " + s)
 
         core = [b for b in bats if b["tools"] >= 2 and b["lead_tool"] == "yes"]
-        c = st.columns(6)
+        ready = [a for a in arms if a["HRA"] >= CARD.HRA_OK and a["eff"] >= CARD.STARTER_EFF]
+        aces = [a for a in arms if a["HRA"] >= CARD.ACE_HRA and (a["control"] or 0) >= CARD.ACE_CTL]
+        c = st.columns(7)
         c[0].metric("Qualifying bats", len(core), help="2+ tools including power or eye. Target 3–4 (A94).")
         c[1].metric("Fail rule 2", sum(1 for b in bats if b["tools"] and b["lead_tool"] == "NO"),
                     help="Clears a bar, but none of it power or eye — below a no-tool bat.")
@@ -124,15 +126,20 @@ with roster_tab:
         # 2.5x/2.9x: that fitted on IP>=120, and A88 sec.0 showed conditioning on
         # innings is conditioning on a collider — it flips every pitcher sign.
         # The two metrics after it are a ROLE question and a FLOOR, not rankings.
-        c[3].metric("Arms HRA %d+" % CARD.HRA_OK,
+        c[3].metric("Rotation-ready", len(ready),
+                    help="HRA %d+ AND %d+ pitches — the arm analog of a qualifying bat. "
+                         "Good enough to help, and enough arsenal to start."
+                         % (CARD.HRA_OK, CARD.STARTER_EFF))
+        c[4].metric("ACE gate", len(aces),
+                    help="HRA %d+ AND control %d+. The arms clearing this are the best in "
+                         "the league (A86)." % (CARD.ACE_HRA, CARD.ACE_CTL))
+        c[5].metric("Arms HRA %d+" % CARD.HRA_OK,
                     "%d / %d" % (sum(1 for a in arms if a["HRA"] >= CARD.HRA_OK), len(arms)),
                     help="THE pitching number. Movement buys home runs, and home runs "
                          "are the run-prevention channel in this league (A88). Your "
                          "park rewards it more than anyone's.")
-        c[4].metric("Arms 3+ pitches", "%d / %d" % (sum(1 for a in arms if a["eff"] >= CARD.STARTER_EFF), len(arms)),
-                    help="A ROLE question, not a quality one. A 4-pitch arm with light HRA is a bad starter.")
-        c[5].metric("Control inert", sum(1 for a in arms if a["ctl_band"] == "INERT"),
-                    help="A FLOOR, not a ranking axis — control owns walks and nothing else (A86). "
+        c[6].metric("Control inert", sum(1 for a in arms if a["ctl_band"] == "INERT"),
+                    help="A FLOOR, not a ranking axis — control owns walks and nothing else (A88). "
                          "Below %d a point is worth ~4%% of a point at 70 (A79)." % CARD.CTL_INERT)
 
         st.subheader("Bats")
@@ -155,8 +162,8 @@ with roster_tab:
                       CARD.CTL_INERT, CARD.STM_GATE))
         st.dataframe(sorted(arms, key=lambda x: (-x["HRA"], -x["eff"], -(x["control"] or 0))),
                      use_container_width=True, hide_index=True,
-                     column_order=["Name", "POS", "Age", "IP", "HRA", "STU", "eff", "role",
-                                   "control", "ctl_band", "STM", "verdict", "FIP-"])
+                     column_order=["Name", "POS", "Age", "IP", "HRA", "STU", "eff",
+                                   "control", "ctl_band", "STM", "verdict", "detail", "FIP-"])
 
 # ═══════════════════════════════ DRAFT ═════════════════════════════════════
 with draft_tab:
