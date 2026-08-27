@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OOTP Tools</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: #0e1117; color: #fafafa; margin: 0; padding: 0;
+         min-height: 100vh; display: flex; flex-direction: column;
+         align-items: center; justify-content: center; }
+  h1 { font-size: 3rem; margin: 0 0 0.5rem 0;
+       background: linear-gradient(135deg, #ff4b4b, #ff8c00);
+       -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+       background-clip: text; }
+  .tagline { color: #888; margin-bottom: 3rem; font-size: 1.1rem; }
+  .cards { display: flex; gap: 2rem; flex-wrap: wrap;
+           justify-content: center; padding: 0 2rem; max-width: 1300px; }
+  .card { background: #1e2128; border: 1px solid #2a2e37; border-radius: 12px;
+          padding: 2rem; width: 280px; text-decoration: none; color: inherit;
+          transition: transform 0.2s, border-color 0.2s; }
+  .card:hover { transform: translateY(-4px); border-color: #ff4b4b; }
+  .card h2 { margin: 0 0 0.5rem 0; color: #ff4b4b; }
+  .card p { color: #aaa; margin: 0.5rem 0; line-height: 1.4; }
+  .status { display: inline-block; font-size: 0.8rem; padding: 2px 8px;
+            border-radius: 4px; margin-top: 0.5rem; }
+  .status.live { background: #1a4d2e; color: #4ade80; }
+  .status.beta { background: #4d3a1a; color: #fbbf24; }
+  footer { margin-top: 4rem; color: #555; font-size: 0.85rem; }
+  footer a { color: #888; }
+</style>
+</head>
+<body>
+  <h1>OOTP Tools</h1>
+  <p class="tagline">Statistical analysis suites for Out of the Park Baseball</p>
+  <div class="cards">
+    <a href="/card/" class="card">
+      <h2>The Card</h2>
+      <p>Twelve rules, applied. Top-quartile bars, glove gates, pitcher floors and the draft board — every constant measured, cited and locked, so the answer is the same next season as it is today.</p>
+      <span class="status live">LIVE</span>
+    </a>
+    <a href="/rank/" class="card">
+      <h2>Player Rank</h2>
+      <p>Percentile ranking by position. Upload a population — roster, draft pool, or league — and the bars come from your file.</p>
+      <span class="status beta">BETA</span>
+    </a>
+    <a href="/lineup/" class="card">
+      <h2>Lineup &amp; Staff</h2>
+      <p>Optimal defensive alignment, rotation and bullpen. Bat runs plus glove runs, engine-exact. Upload a roster; add a candidate pool to see who upgrades it.</p>
+      <span class="status beta">BETA</span>
+    </a>
+    <a href="/27/" class="card">
+      <h2>OOTP 27 Suite</h2>
+      <p>Full evaluation toolkit — F1/F2 valuation, draft board, roster construction, development. Legacy — still on pre-A57 batter weights. Use The Card for current numbers.</p>
+      <span class="status live">LIVE</span>
+    </a>
+  </div>
+  <footer>Built by <a href="https://github.com/jagreen34">jagreen34</a></footer>
+</body>
+</html>
