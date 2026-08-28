@@ -371,7 +371,7 @@ def staff_score(row, proj, as_role):
         s += w * float(v)
     if K.APPLY_ARSENAL_DEPTH:
         n, _ = real_pitches(row)
-        s += (K.PITCHER_WEIGHTS.get("MOV", 1.6) * K.ARSENAL_DEPTH_RATING_EQUIV
+        s += (K.PITCHER_WEIGHTS["HRA"] * K.ARSENAL_DEPTH_RATING_EQUIV
               * (n - K.STARTER_ARSENAL_TARGET))
     ok, _, _ = arsenal_ok(row)
     if not ok:
@@ -393,7 +393,7 @@ def build_staff(pits_df, projected):
     for _, r in pits_df.iterrows():
         proj = project_pitcher(r) if projected else {
             "STU": pd.to_numeric(r.get("STU"), errors="coerce"),
-            "MOV": pd.to_numeric(r.get("MOV"), errors="coerce"),
+            "HRA": pd.to_numeric(r.get("HRA"), errors="coerce"),
             "CON": pd.to_numeric(r.get("CON_1"), errors="coerce")}
         n, norm, vs = arsenal_vs_age(r)
         as_sp, as_rp = staff_score(r, proj, "SP"), staff_score(r, proj, "RP")
@@ -401,7 +401,7 @@ def build_staff(pits_df, projected):
             "Name": str(r.get("Name", "")), "Age": pd.to_numeric(r.get("Age"), errors="coerce"),
             "Listed": r.get("POS"), "asSP": as_sp, "asRP": as_rp,
             "HRA": pd.to_numeric(r.get("HRA"), errors="coerce"),
-            "MOV": proj.get("MOV"), "CON": proj.get("CON"), "STU": proj.get("STU"),
+            "HRA": proj.get("HRA"), "CON": proj.get("CON"), "STU": proj.get("STU"),
             "STM": pd.to_numeric(r.get("STM"), errors="coerce"),
             "IP@STM": sp_innings(r),
             "Real": n, "vsAgeNorm": vs,
@@ -447,7 +447,7 @@ def find_staff_upgrades(cand_df, staff_df, projected, role, slots, exclude=()):
 
 
 def _staff_cols(d, extra=()):
-    base = ["Name", "Age", "Listed", "HRA", "CON", "MOV", "STU", "Real",
+    base = ["Name", "Age", "Listed", "HRA", "CON", "STU", "Real",
             "vsAgeNorm", "STM", "IP@STM", "ERA+", "FIP-"]
     return [c for c in list(extra) + base if c in d.columns]
 
@@ -805,7 +805,7 @@ with tab_lineup:
     st.markdown("#### Batting order — The Book")
     order = book_order(starters)
     if not pits.empty:
-        p9 = pits.iloc[(pd.to_numeric(pits.get("MOV"), errors="coerce").fillna(0) +
+        p9 = pits.iloc[(pd.to_numeric(pits.get("HRA"), errors="coerce").fillna(0) +
                         pd.to_numeric(pits.get("HRA"), errors="coerce").fillna(0)).argmax()]
         order.append({"#": 9, "Player": f"{p9.get('Name', 'Pitcher')} (P)", "POS": "P"})
     else:
