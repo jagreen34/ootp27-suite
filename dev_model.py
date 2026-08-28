@@ -88,7 +88,7 @@ BAT_TOOLS = {
     "AVK":   ("K's", "K P"),
 }
 PIT_TOOLS = {
-    "MOV": ("MOV", "MOV P"),
+    "HRA": ("HRA", "HRA P"),   # was MOV -- A69/A35, re-pointed 2026-08-28
     "CON": ("CON_1", "CON P_1"),
     "STU": ("STU", "STU P"),
 }
@@ -400,7 +400,7 @@ def score_pitcher(proj, row=None):
         # at grade >=30, A59 counts them at the A41 crossover (>=40, CH >=45).
         if APPLY_ARSENAL_DEPTH:
             n_real, _ = real_pitches(row)
-            s += (PITCHER_WEIGHTS.get("MOV", 1.6) * ARSENAL_DEPTH_RATING_EQUIV
+            s += (PITCHER_WEIGHTS.get("HRA", 2.20) * ARSENAL_DEPTH_RATING_EQUIV
                   * (n_real - STARTER_ARSENAL_TARGET))
         ok, _, _ = arsenal_ok(row)
         if not ok:
