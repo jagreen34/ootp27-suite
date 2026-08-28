@@ -28,8 +28,31 @@ LEAD_TOOLS = ('POW', 'EYE')
 # --- Rule 5: glove floors, on the TOOLS. Never the position rating (it drifts
 # with games played). 3B is range+arm because on ZR they are a dead heat
 # (+0.310 v +0.290, n=17,459). [A73 + measured 2026-08-26]
-RANGE_GATE = {'SS': 60, '2B': 55, 'CF': 65}
-GATE_3B_SUM = 120                      # IF RNG + IF ARM
+#
+# ⛔ REVERSAL 2026-08-28 — SS 60 -> 70, 2B 55 -> 60. [A108]
+# The old values were the PARQUET positional means and this file applied them to
+# AC players, which is the exact error its own BARS_AC comment warns about four
+# lines above. Rule 14: a threshold is pool-relative and does not transfer.
+#
+# WHY THE GATE IS THE POSITIONAL MEAN. ZR is measured against league-average
+# defence, so the rating at which a fielder stops COSTING runs is the rating of
+# an average fielder in that league. Measured on AC regulars (200+ defensive
+# innings, Aug 20 export):
+#     SS  mean IF RNG 70.3   (n=15)     parquet mean 58.5
+#     2B  mean IF RNG 61.0   (n=45)     parquet mean 52.3
+#     CF  mean OF RNG 65.5   (n=22)     parquet mean 59.7
+#     3B  mean RNG+ARM 120.2 (n=20)  -> the 3B gate was already AC-native
+# CF and 3B are unchanged; only SS and 2B were carrying parquet numbers.
+#
+# ⚠ The SS gate rests on n=15 — the thinnest of the three. Least settled;
+# re-measure when more of the season is in.
+#
+# ✅ This also RECONCILES ratings with observed play. Under the old gates
+# Neyland and Watkins read +10 over the SS gate (~+20 wRC+) while posting
+# roughly average ZR. At the correct gate they are +0. Clark is unaffected
+# (the CF gate never moved) and remains the roster's one genuine plus glove.
+RANGE_GATE = {'SS': 70, '2B': 60, 'CF': 65}
+GATE_3B_SUM = 120                      # IF RNG + IF ARM; AC mean is 120.2
 NO_GATE = ('C', '1B', 'LF', 'RF', 'DH')  # catcher defence is a null, p=.921 [A58a]
 
 # ⚠ A GATE IS NOT A VALUATION. Clearing by 5 and clearing by 25 are different
