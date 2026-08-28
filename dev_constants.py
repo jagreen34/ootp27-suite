@@ -125,10 +125,33 @@ APPLY_INTERACTIONS = False
 
 # A48/A53 team-wins weights -- pitcher tools. STU is DERIVED (engine-computed
 # from the arsenal): read it, never project or inject it.
-PITCHER_WEIGHTS = {"STU": 1.7, "MOV": 1.6, "CON": 1.3}
+#
+# ⛔ RE-PROPORTIONED AND RE-POINTED 2026-08-28. Was {"STU":1.7,"MOV":1.6,"CON":1.3}.
+# TWO separate defects, both from findings that postdate A48/A53:
+#
+# (1) THE FIELD. It scored MOV. A34/A35 established that overall Movement is
+#     raw movement DILUTED with PBABIP and GB%, while HRA is the pure
+#     HR-suppression primitive -- and HRA is the park-relevant one, which
+#     matters more for the Quakers (PF HR 1.300) than for anyone in the league.
+#     A69 states it flatly: read HRA, never Overall Movement.
+#
+# (2) THE ORDER. STU outranked MOV here. A88's within-player estimator
+#     (n=18,319 year-over-year pairs, the only design immune to the IP-collider
+#     in A88 sec.0) puts them:
+#         HRA -0.417  >  STU -0.236  >  CON -0.200  >  STM -0.046
+#     Movement is FIRST and roughly 1.8x stuff, not second to it.
+#
+# ⚠ ASSUMPTION, STATED. A88's coefficients are within-player FIP- deltas;
+# these weights are A48/A53 team-wins units. The two are NOT interchangeable,
+# so the numbers below are NOT A88's values pasted in. The total magnitude is
+# preserved (4.6, as before) and only the PROPORTIONS are reset to A88's
+# ratios. That fixes the ordering without claiming a unit conversion nobody
+# has measured. If someone later fits these three on team wins directly, this
+# block should be replaced outright rather than re-scaled again.
+PITCHER_WEIGHTS = {"HRA": 2.20, "STU": 1.24, "CON": 1.06}
 
-# Only MOV and CON take the age budget. Pitch grades barely develop (A48).
-PITCHER_DEVELOPING_TOOLS = ("MOV", "CON")
+# Only movement and control take the age budget. Pitch grades barely develop (A48).
+PITCHER_DEVELOPING_TOOLS = ("HRA", "CON")
 
 # --------------------------------------------------------------------------
 # A54 -- COMMAND GATE. Break-even internal ~310-320, which sits in the
@@ -211,15 +234,30 @@ DEFENSIVE_SECONDARY = {       # HARD, second tool -- both must clear
     "CF": ("OF ARM", 45),
 }
 
-STARTER_FLOORS = {            # FLAG ONLY -- league median at the position
+# ⛔ RE-MEASURED 2026-08-28 [A108]. Was SS 65 / CF 60 / 3B 60 / 2B 55, taken as
+# the "league median at the position" over EVERYONE LISTED there -- which
+# includes bench and reserve players who never take an inning. League-average
+# defence is set by who actually fields the position, so the right statistic is
+# the INNINGS-WEIGHTED mean. Measured on two exports eight days apart:
+#
+#   pos  field    n   Aug 28   Aug 20   ->grid   was
+#   SS   IF RNG  23    67.1     67.1      65     65   (unchanged)
+#   2B   IF RNG  87    60.7     60.7      60     55
+#   CF   OF RNG  29    65.0     65.0      65     60
+#   3B   IF ARM  27    66.7     66.7      65     60
+#
+# Identical across both files -- unlike a 200-inning cutoff, which moved SS from
+# 70.3 (n=15) to 66.2 (n=20) over the same eight days and briefly put a wrong
+# gate into quakers.py. Weight by innings; do not threshold.
+STARTER_FLOORS = {            # FLAG ONLY -- innings-weighted league mean at the position
     "SS": ("IF RNG", 65),
-    "CF": ("OF RNG", 60),
+    "CF": ("OF RNG", 65),
     # ⚠ "C": ("C ABI", 60) REMOVED v15.45 -- that flag PRICED catcher defence,
     # and C_ABI is a dead null [A58a, p=.921 at N=1,044]. The hard floor in
     # DEFENSIVE_FLOORS stays: it answers "can he physically catch", which is an
     # ELIGIBILITY question A58 does not touch. Quality screening is what died.
-    "3B": ("IF ARM", 60),
-    "2B": ("IF RNG", 55),
+    "3B": ("IF ARM", 65),
+    "2B": ("IF RNG", 60),
 }
 
 # --------------------------------------------------------------------------
@@ -316,7 +354,7 @@ TEAM_IP = 1459
 # STU is DERIVED from the arsenal [A50] -- read it, never project it, and do
 # NOT let it carry weight in the active chain (it would double-count the pitch
 # grades). PITCHER_WEIGHTS keeps STU for reference/display only.
-PITCHER_WEIGHTS_ACTIVE = {"MOV": 1.6, "CON": 1.3}
+PITCHER_WEIGHTS_ACTIVE = {"HRA": 2.20, "CON": 1.06}   # re-pointed/re-proportioned 2026-08-28, see PITCHER_WEIGHTS
 
 # Centering constants. ⚠ FROZEN at an Aug-2026 snapshot -- no refresh mechanism.
 # The AC rating distribution moves slowly within a season but turns over across
@@ -354,7 +392,13 @@ BATTER_LEAGUE_MEANS = {
 # ...frozen snapshot continues:
 # The AC rating distribution moves slowly within a season but turns over across
 # offseasons. Recompute from a current league export each winter.
-PITCHER_LEAGUE_MEANS = {"STU": 45.41, "MOV": 48.67, "CON": 40.98}
+# ⚠ HRA replaces MOV here too (2026-08-28). Measured on the same population
+# the incumbents came from -- AC arms with 20+ IP, Aug 28 export:
+#     HRA 53.18   MOV 52.66   CON 45.14   STU 49.62
+# The incumbent trio (45.41 / 48.67 / 40.98) is an older snapshot; only the
+# MOV slot is re-pointed, the others are left as-found so this edit changes
+# ONE thing. Recompute all four from a current export each winter.
+PITCHER_LEAGUE_MEANS = {"STU": 45.41, "HRA": 53.18, "CON": 40.98}
 PITCHER_WEIGHT_UNIT_ASSUMED = True
 
 # Volume at which a rate estimate is treated as fully trustworthy. Below it,
@@ -473,8 +517,29 @@ DEF_ARM_COL   = {"2B": "IF ARM", "SS": "IF ARM", "3B": "IF ARM",
 # +0.89 ERA+ per real pitch; MOV is +1.09 ERA+ per RATING point. So one real
 # pitch == 0.89/1.09 = 0.817 movement rating points, which is what makes it
 # commensurable with the existing weighted-sum score.
+# ⚠ Still anchored on MOV, deliberately. This constant converts arsenal
+# depth into rating units and was FITTED against overall Movement; there is
+# no measured HRA equivalent. Renaming it would imply a measurement that
+# does not exist. Left as-is and flagged.
 MOV_ERAPLUS_PER_RATING_POINT = 1.09
 ARSENAL_DEPTH_RATING_EQUIV = ARSENAL_DEPTH_ERAPLUS_PER_PITCH / MOV_ERAPLUS_PER_RATING_POINT
+
+# ⚠ SIDE EFFECT OF THE 2026-08-28 RE-WEIGHTING, FLAGGED NOT HIDDEN.
+# The arsenal term is scored as (movement weight) x (this constant), i.e. depth
+# is priced in movement-rating-points. Raising the movement weight from 1.6 to
+# 2.20 therefore raised the arsenal bonus per real pitch from 1.31 to 1.80,
+# a +38% move that NOTHING in A88 or A59 measured -- it is a mechanical
+# consequence of re-proportioning the weights.
+#
+# It was left to ride rather than rescaled, on the reasoning that depth is
+# genuinely denominated in movement points, so if a movement point is worth
+# more then so is depth. That reasoning is defensible and it is NOT measured.
+# There is also a live units mismatch: this constant is in MOV points and it is
+# now multiplied by an HRA weight. MOV and HRA correlate 0.97-0.982 (A75/A88),
+# which is why that is tolerable rather than wrong.
+#
+# If arsenal depth starts looking overweighted on the board, THIS is the line
+# to suspect first, and the fix is to re-fit A59 against HRA directly.
 APPLY_ARSENAL_DEPTH = True
 
 # A59c -- the arsenal screen is AGE-RELATIVE. A flat 2-pitch mirage test judges
