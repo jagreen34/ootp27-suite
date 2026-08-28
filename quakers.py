@@ -29,29 +29,34 @@ LEAD_TOOLS = ('POW', 'EYE')
 # with games played). 3B is range+arm because on ZR they are a dead heat
 # (+0.310 v +0.290, n=17,459). [A73 + measured 2026-08-26]
 #
-# ⛔ REVERSAL 2026-08-28 — SS 60 -> 70, 2B 55 -> 60. [A108]
+# ⛔ REVERSAL 2026-08-28 — SS 60 -> 65, 2B 55 -> 60. [A108, amended same day]
 # The old values were the PARQUET positional means and this file applied them to
 # AC players, which is the exact error its own BARS_AC comment warns about four
 # lines above. Rule 14: a threshold is pool-relative and does not transfer.
 #
 # WHY THE GATE IS THE POSITIONAL MEAN. ZR is measured against league-average
 # defence, so the rating at which a fielder stops COSTING runs is the rating of
-# an average fielder in that league. Measured on AC regulars (200+ defensive
-# innings, Aug 20 export):
-#     SS  mean IF RNG 70.3   (n=15)     parquet mean 58.5
-#     2B  mean IF RNG 61.0   (n=45)     parquet mean 52.3
-#     CF  mean OF RNG 65.5   (n=22)     parquet mean 59.7
-#     3B  mean RNG+ARM 120.2 (n=20)  -> the 3B gate was already AC-native
-# CF and 3B are unchanged; only SS and 2B were carrying parquet numbers.
+# an average fielder in that league.
 #
-# ⚠ The SS gate rests on n=15 — the thinnest of the three. Least settled;
-# re-measure when more of the season is in.
+# ⚠⚠ AND IT IS THE INNINGS-WEIGHTED MEAN, NOT A CUTOFF. The first cut of this
+# reversal used "regulars with 200+ defensive innings" and set SS to 70 off
+# n=15. That was an artifact of the cutoff — eight days later the same filter
+# returned n=20 and a mean of 66.2. League-average defence is set by WHO TAKES
+# THE INNINGS, so weight by innings and drop the threshold. Then it is stable:
 #
-# ✅ This also RECONCILES ratings with observed play. Under the old gates
-# Neyland and Watkins read +10 over the SS gate (~+20 wRC+) while posting
-# roughly average ZR. At the correct gate they are +0. Clark is unaffected
-# (the CF gate never moved) and remains the roster's one genuine plus glove.
-RANGE_GATE = {'SS': 70, '2B': 60, 'CF': 65}
+#   pos  innings-wtd  unwtd(any)  unwtd(200+)  ->grid | Aug-20 file | Aug-28 file
+#   SS      67.1         65.7        66.2        65   |   67.1      |   67.1
+#   2B      60.7         60.2        60.4        60   |   60.7      |   60.7
+#   CF      65.0         64.1        64.8        65   |   65.0      |   65.0
+#
+# Identical across two exports eight days apart, and all three methods agree on
+# the grid value. That is what a gate is supposed to do; SS 70 did not.
+# Parquet means for contrast: SS 58.5 / 2B 52.3 / CF 59.7 — they do not transfer.
+#
+# Net effect on the roster: Neyland and Watkins sit +5 over the SS gate (~+10
+# wRC+), which matches their observed ZR (+6.6 and +16.8 per 1000). The 60-gate
+# said +20 and the 70-gate said +0; both were wrong in opposite directions.
+RANGE_GATE = {'SS': 65, '2B': 60, 'CF': 65}
 GATE_3B_SUM = 120                      # IF RNG + IF ARM; AC mean is 120.2
 NO_GATE = ('C', '1B', 'LF', 'RF', 'DH')  # catcher defence is a null, p=.921 [A58a]
 
