@@ -243,7 +243,7 @@ def render_card(row_src, proj, sc, bar, pool, mode_is_bat):
         c2.metric("Real pitches", n)
         c3.metric("Role", role_of(row_src) or "?")
         st.dataframe(pd.DataFrame([{
-            "STU": proj.get("STU"), "MOV": proj.get("MOV"), "CON": proj.get("CON"),
+            "STU": proj.get("STU"), "HRA": proj.get("HRA"), "CON": proj.get("CON"),
             "HRA": row_src.get("HRA"), "STM": row_src.get("STM"),
         }]), hide_index=True, use_container_width=True)
         pit = {c: row_src.get(c) for c in PITCH_COLS
@@ -354,7 +354,7 @@ def build_pitchers(df):
             continue
         proj = project_pitcher(r) if show_projected else {
             "STU": pd.to_numeric(r.get("STU"), errors="coerce"),
-            "MOV": pd.to_numeric(r.get("MOV"), errors="coerce"),
+            "HRA": pd.to_numeric(r.get("HRA"), errors="coerce"),
             "CON": pd.to_numeric(r.get("CON_1"), errors="coerce")}
         sc = score_pitcher(proj, r)
         n, _ = real_pitches(r)
@@ -362,7 +362,7 @@ def build_pitchers(df):
             "Name": r.get("Name"), "Org": org_of(r), "POS": r.get("POS"),
             "Role": role_of(r),
             "Age": pd.to_numeric(r.get("Age"), errors="coerce"),
-            "Score": sc, "STU": proj.get("STU"), "MOV": proj.get("MOV"),
+            "Score": sc, "STU": proj.get("STU"), "HRA": proj.get("HRA"),
             "CON": proj.get("CON"), "HRA": pd.to_numeric(r.get("HRA"), errors="coerce"),
             "RealPitches": n, "vsAgeNorm": arsenal_vs_age(r)[2],
             "_flags": flag_pitcher(r, proj),
@@ -384,7 +384,7 @@ def league_pitcher_pool(_df_bytes, projected):
             continue
         proj = project_pitcher(x) if projected else {
             "STU": pd.to_numeric(x.get("STU"), errors="coerce"),
-            "MOV": pd.to_numeric(x.get("MOV"), errors="coerce"),
+            "HRA": pd.to_numeric(x.get("HRA"), errors="coerce"),
             "CON": pd.to_numeric(x.get("CON_1"), errors="coerce")}
         out.append(score_pitcher(proj, x))
     return pd.Series(out)
@@ -450,7 +450,7 @@ cols = (["Name", "Org", "POS", "Plays", "CanPlay", "Age", "Score", "Bat", "Def",
          "Pct@POS", "PctAll", "vsBar", "ParkD", "Budget",
          "POW", "EYE", "HT", "GAP", "AVK"]
         if mode == "Batters" else
-        ["Name", "Org", "POS", "Role", "Age", "Score", "PctAll", "STU", "MOV",
+        ["Name", "Org", "POS", "Role", "Age", "Score", "PctAll", "STU", "HRA",
          "HRA", "CON", "RealPitches", "vsAgeNorm"])
 if mode == "Batters" and not include_defense:
     cols = [c for c in cols if c not in ("Bat", "Def")]
@@ -513,7 +513,7 @@ if pick and pick != "—":
         else:
             pj = project_pitcher(r0) if show_projected else {
                 "STU": pd.to_numeric(r0.get("STU"), errors="coerce"),
-                "MOV": pd.to_numeric(r0.get("MOV"), errors="coerce"),
+                "HRA": pd.to_numeric(r0.get("HRA"), errors="coerce"),
                 "CON": pd.to_numeric(r0.get("CON_1"), errors="coerce")}
             render_card(r0, pj, score_pitcher(pj, r0), None, None, False)
 st.markdown("---")
