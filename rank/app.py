@@ -487,9 +487,13 @@ if mode == "Batters":
                "misses the defensive floor at his listed position and has been "
                "re-barred at the fallback. Gloves are FIXED [A50].")
 else:
-    st.caption("**Score** now carries **arsenal depth** [A59]: +0.89 ERA+ per real "
-               "pitch controlling for STU/MOV/CON — about 80% of a full movement "
-               "rating point, peaking at 5 pitches. This REVERSES A14 Study 2; the "
+    st.caption("**Score** now carries **arsenal depth** [A59], on the MEASURED "
+               "curve rather than a straight line: ERA+ runs 99.8 / 104.7 / 107.9 "
+               "/ 109.3 / 105.7 at 2–6 real pitches, so the third pitch is worth "
+               "far more than the sixth and **two pitches costs ~4.9 ERA+, not "
+               "0.9** (the linear term shipped through 2026-08-29 under-docked it "
+               "fivefold and floated two-pitch relievers into rotations). This "
+               "REVERSES A14 Study 2; the "
                "reconciliation is the quality floor (A14 counted grade ≥30, A59 "
                "counts the A41 crossover ≥40 / CH ≥45). **vsAgeNorm** = real pitches "
                "minus the mean for his age — the screen is AGE-RELATIVE, since the "
