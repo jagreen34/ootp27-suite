@@ -126,7 +126,14 @@ ARM_POS = ('SP', 'RP', 'CL', 'P')
 
 # ============================== MACHINERY ==============================
 
-def rate(row, key, denom_key):
+# A97 §6a: early FIP− carries real signal, but only once innings are behind it
+# — "roughly 25–40 innings is where the signal becomes legible." Below that a
+# rate stat is noise wearing a number's clothes.
+MIN_LEGIBLE_IP = 25.0
+MIN_LEGIBLE_PA = 50.0
+
+
+def rate(row, key, denom_key, min_denom=None):
     """A rate stat with no playing time behind it is NOT zero — it is UNKNOWN.
 
     This is methodology rule 22 in its nastiest form. A silent zero on a counting
@@ -134,13 +141,21 @@ def rate(row, key, denom_key):
     NORMALISED rate stat FLATTERS: FIP- 0 is a perfect score, so an arm who has
     never thrown a pitch sorts and reads as the best on the staff. Five of the
     Quakers' nineteen arms were displaying it. Return an em-dash instead.
+
+    ⚠ 2026-08-29: `d > 0` was NOT ENOUGH and this shipped for two days. The
+    lineup page produced **ERA+ 1100 off 1.1 innings** — a positive denominator
+    that is not a sample. A fraction of an inning passes the old test and then
+    reads as the best number on the page, which is the same failure the function
+    exists to prevent. Floor is now A97's legibility band, not zero.
     """
+    if min_denom is None:
+        min_denom = MIN_LEGIBLE_PA if denom_key == 'PA' else MIN_LEGIBLE_IP
     try:
         d = float(row.get(denom_key, '') or 0)
     except (TypeError, ValueError):
         d = 0
     v = str(row.get(key, '')).strip()
-    return v if (d > 0 and v not in ('', '-')) else '—'
+    return v if (d >= min_denom and v not in ('', '-')) else '—'
 
 def num(row, key, name, required=True):
     v = row.get(key, '')
