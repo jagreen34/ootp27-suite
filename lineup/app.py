@@ -369,10 +369,12 @@ def staff_score(row, proj, as_role):
         if tool == "STU" and as_role in ("RP", "CL"):
             v = max(0.0, float(v) - K.RP_STUFF_DEFLATOR)
         s += w * float(v)
+    # ⚠ 2026-08-29: was a LINEAR term. A59's measured curve peaks at 5 and turns
+    # down at 6; the straight line under-docked two-pitch arms 5x and floated
+    # them into rotations. See dev_constants.arsenal_depth_rating_delta.
     if K.APPLY_ARSENAL_DEPTH:
         n, _ = real_pitches(row)
-        s += (K.PITCHER_WEIGHTS["HRA"] * K.ARSENAL_DEPTH_RATING_EQUIV
-              * (n - K.STARTER_ARSENAL_TARGET))
+        s += K.PITCHER_WEIGHTS["HRA"] * K.arsenal_depth_rating_delta(n)
     ok, _, _ = arsenal_ok(row)
     if not ok:
         s *= K.MIRAGE_PENALTY
@@ -386,6 +388,35 @@ def sp_innings(row):
     if pd.isna(stm):
         return None
     return int(round(120 + 1.25 * (float(stm) - 35)))
+
+
+# A97 §6a: early FIP− carries real signal about a pitcher, but only once there
+# are innings behind it — "roughly 25–40 innings is where the signal becomes
+# legible." Below that a rate stat is noise wearing a number's clothes, and this
+# export produced ERA+ 1100 off 1.1 innings to prove it. `d > 0` is NOT enough.
+MIN_LEGIBLE_IP = 25.0
+
+
+def _rate_stat(row, key, denom_key="IP", min_denom=MIN_LEGIBLE_IP):
+    """A rate stat with no playing time behind it is NOT zero — it is UNKNOWN.
+
+    Methodology rule 22 in its nastiest form, and this page shipped it. A silent
+    zero on a NORMALISED rate FLATTERS: FIP- 0 is a perfect score, so an arm who
+    has never thrown a pitch sorts and reads as the best on the staff. The same
+    export also produced ERA+ 1100 off a fractional denominator.
+
+    Ported from quakers.rate(), which fixed this on the Card on 2026-08-27 and
+    was never carried across to this page. If the denominator COLUMN is absent
+    from the export we return the dash too — an unverifiable number is not a
+    number, and blanking it is the loud failure.
+    """
+    if denom_key not in getattr(row, "index", ()):
+        return "—"
+    d = pd.to_numeric(row.get(denom_key), errors="coerce")
+    v = pd.to_numeric(row.get(key), errors="coerce")
+    if pd.isna(d) or pd.isna(v) or float(d) < float(min_denom):
+        return "—"
+    return f"{float(v):g}"
 
 
 def build_staff(pits_df, projected):
@@ -407,8 +438,9 @@ def build_staff(pits_df, projected):
             "STM": pd.to_numeric(r.get("STM"), errors="coerce"),
             "IP@STM": sp_innings(r),
             "Real": n, "vsAgeNorm": vs,
-            "ERA+": pd.to_numeric(r.get("ERA+"), errors="coerce"),
-            "FIP-": pd.to_numeric(r.get("FIP-"), errors="coerce"),
+            # ⚠ rule 22 — never silent-zero a rate stat. See _rate_stat().
+            "ERA+": _rate_stat(r, "ERA+"),
+            "FIP-": _rate_stat(r, "FIP-"),
             "_row": r, "_proj": proj,
         })
     return pd.DataFrame(rows)
@@ -710,7 +742,13 @@ with tab_pen:
         st.info("No pitchers in this file.")
     else:
         staff = build_staff(pits, project_on)
-        rot_names = set(staff.sort_values("asSP", ascending=False)
+        # ⚠ 2026-08-29: this read "asSP" unconditionally while the Rotation tab
+        # sorts on SPvol whenever the innings box is ticked. The two tabs then
+        # disagreed about who was a starter and the same arm appeared on BOTH —
+        # the page's own caption promises they are disjoint. Read the SAME key.
+        staff["SPvol"] = (staff["asSP"] * staff["IP@STM"].fillna(160) / 200).round(1)
+        rot_key = "SPvol" if st.session_state.get("rotvol", False) else "asSP"
+        rot_names = set(staff.sort_values(rot_key, ascending=False)
                         .head(ROTATION_SLOTS)["Name"])
         pen = staff[~staff["Name"].isin(rot_names)].sort_values(
             "asRP", ascending=False).reset_index(drop=True)
