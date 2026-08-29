@@ -244,7 +244,7 @@ def render_card(row_src, proj, sc, bar, pool, mode_is_bat):
         c3.metric("Role", role_of(row_src) or "?")
         st.dataframe(pd.DataFrame([{
             "STU": proj.get("STU"), "HRA": proj.get("HRA"), "CON": proj.get("CON"),
-            "HRA": row_src.get("HRA"), "STM": row_src.get("STM"),
+            "STM": row_src.get("STM"),
         }]), hide_index=True, use_container_width=True)
         pit = {c: row_src.get(c) for c in PITCH_COLS
                if c in row_src and pd.notna(pd.to_numeric(row_src.get(c), errors="coerce"))}
@@ -362,8 +362,13 @@ def build_pitchers(df):
             "Name": r.get("Name"), "Org": org_of(r), "POS": r.get("POS"),
             "Role": role_of(r),
             "Age": pd.to_numeric(r.get("Age"), errors="coerce"),
+            # ⚠ ONE HRA column, not two. This dict previously carried projected
+            # MOV *and* raw HRA side by side; re-pointing MOV to HRA collided
+            # them, and a duplicate key in a dict literal silently keeps the
+            # LAST one. proj["HRA"] already equals the raw value when the
+            # projection toggle is off, so one column serves both states.
             "Score": sc, "STU": proj.get("STU"), "HRA": proj.get("HRA"),
-            "CON": proj.get("CON"), "HRA": pd.to_numeric(r.get("HRA"), errors="coerce"),
+            "CON": proj.get("CON"),
             "RealPitches": n, "vsAgeNorm": arsenal_vs_age(r)[2],
             "_flags": flag_pitcher(r, proj),
         })
@@ -451,7 +456,7 @@ cols = (["Name", "Org", "POS", "Plays", "CanPlay", "Age", "Score", "Bat", "Def",
          "POW", "EYE", "HT", "GAP", "AVK"]
         if mode == "Batters" else
         ["Name", "Org", "POS", "Role", "Age", "Score", "PctAll", "STU", "HRA",
-         "HRA", "CON", "RealPitches", "vsAgeNorm"])
+         "CON", "RealPitches", "vsAgeNorm"])
 if mode == "Batters" and not include_defense:
     cols = [c for c in cols if c not in ("Bat", "Def")]
 # drop the Org column entirely when the file has no team info (draft pools)
