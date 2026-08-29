@@ -30,7 +30,7 @@ from dev_constants import (
     RUNS_PER_DP, RUNS_PER_ERROR, DEF_BASELINE_GRADE, APPLY_DEF_RUNS,
     DEF_RANGE_COL, DEF_ERROR_COL, DEF_ARM_COL,
     # ── v15.45: A59 arsenal depth -- likewise defined and unused.
-    ARSENAL_DEPTH_RATING_EQUIV, APPLY_ARSENAL_DEPTH,
+    ARSENAL_DEPTH_RATING_EQUIV, APPLY_ARSENAL_DEPTH, arsenal_depth_rating_delta,
     MEAN_REAL_PITCHES_BY_AGE, APPLY_AGE_RELATIVE_ARSENAL, ARSENAL_AGE_TOLERANCE,
     STARTER_ARSENAL_TARGET, STARTER_ARSENAL_OPTIMAL,
     APPLY_COMMAND_GATE, COMMAND_GATE_CARD, COMMAND_GATE_INTERNAL,
@@ -398,10 +398,11 @@ def score_pitcher(proj, row=None):
         # ⚠ This REVERSES A14 Study 2 ("more effective pitches is monotonically
         # worse"). The reconciliation is the quality floor: A14 counted pitches
         # at grade >=30, A59 counts them at the A41 crossover (>=40, CH >=45).
+        # ⚠ 2026-08-29: was a LINEAR term on ARSENAL_DEPTH_RATING_EQUIV. The
+        # curve peaks at 5 -- the comment above said so and the code ignored it.
         if APPLY_ARSENAL_DEPTH:
             n_real, _ = real_pitches(row)
-            s += (PITCHER_WEIGHTS.get("HRA", 2.20) * ARSENAL_DEPTH_RATING_EQUIV
-                  * (n_real - STARTER_ARSENAL_TARGET))
+            s += PITCHER_WEIGHTS.get("HRA", 2.20) * arsenal_depth_rating_delta(n_real)
         ok, _, _ = arsenal_ok(row)
         if not ok:
             s *= MIRAGE_PENALTY
