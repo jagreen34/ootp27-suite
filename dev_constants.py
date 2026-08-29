@@ -542,6 +542,40 @@ ARSENAL_DEPTH_RATING_EQUIV = ARSENAL_DEPTH_ERAPLUS_PER_PITCH / MOV_ERAPLUS_PER_R
 # to suspect first, and the fix is to re-fit A59 against HRA directly.
 APPLY_ARSENAL_DEPTH = True
 
+
+def arsenal_depth_rating_delta(n_real):
+    """A59's MEASURED curve, in movement-rating points, relative to the 3-pitch bar.
+
+    ⚠ REPLACES the linear `ARSENAL_DEPTH_RATING_EQUIV * (n - 3)` term shipped
+    through 2026-08-29. That term was wrong in BOTH directions, because the
+    measured relationship is not linear -- it peaks at 5 and turns down at 6,
+    and ARSENAL_DEPTH_ERAPLUS said so in this same file the whole time:
+
+        real pitches      2      3      4      5      6
+        ERA+ (measured)  99.8  104.7  107.9  109.3  105.7
+        vs the 3 bar     -4.9    0     +3.2   +4.6   +1.0   <- measured
+        vs the 3 bar     -0.9    0     +0.9   +1.8   +2.7   <- linear, shipped
+
+    The two-pitch cell is the one that did damage. The linear term docked a
+    two-pitch arm 0.9 ERA+ where the data says 4.9 -- a 5x under-penalty -- so
+    two-pitch relievers ranked into rotations on the board. The six-pitch cell
+    is the mirror error: the linear term paid +2.7 where the data says +1.0.
+
+    ⚠ CLAMPED, NOT EXTRAPOLATED, outside 2-6. There is no measurement below 2
+    (0-1 pitch arms are caught by arsenal_ok/MIRAGE_PENALTY, which is the right
+    instrument) and none above 6. The n=6 cell is itself thin (387) and the dip
+    may be "nothing is elite" rather than a real turn -- but it is measured and
+    the straight line was not.
+    """
+    try:
+        n = int(n_real)
+    except (TypeError, ValueError):
+        return 0.0
+    n = max(2, min(6, n))
+    base = ARSENAL_DEPTH_ERAPLUS[STARTER_ARSENAL_TARGET]
+    return (ARSENAL_DEPTH_ERAPLUS[n] - base) / MOV_ERAPLUS_PER_RATING_POINT
+
+
 # A59c -- the arsenal screen is AGE-RELATIVE. A flat 2-pitch mirage test judges
 # a 17-year-old (mean 1.05 real pitches) against a 28-year-old (3.02).
 APPLY_AGE_RELATIVE_ARSENAL = True
