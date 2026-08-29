@@ -400,7 +400,9 @@ def build_staff(pits_df, projected):
         rows.append({
             "Name": str(r.get("Name", "")), "Age": pd.to_numeric(r.get("Age"), errors="coerce"),
             "Listed": r.get("POS"), "asSP": as_sp, "asRP": as_rp,
-            "HRA": pd.to_numeric(r.get("HRA"), errors="coerce"),
+            # ⚠ ONE HRA column -- see the same note in rank_app. The duplicate
+            # here was SILENT (the column list names HRA once), so it shipped
+            # the projection where the raw rating was intended.
             "HRA": proj.get("HRA"), "CON": proj.get("CON"), "STU": proj.get("STU"),
             "STM": pd.to_numeric(r.get("STM"), errors="coerce"),
             "IP@STM": sp_innings(r),
